@@ -78,7 +78,10 @@ if (is_first_run) {
 # 2. Set target options -----
 tar_option_set(
   packages = c("istatlab", "data.table"),
-  format = "rds"
+  format = "rds",
+  # Use "continue" error mode: failed targets stop with error but pipeline continues
+  # Failed targets will rerun next time but don't block other datasets
+  error = "continue"
 )
 
 # 3. Define pipeline -----

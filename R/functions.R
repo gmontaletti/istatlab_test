@@ -209,43 +209,105 @@ extract_root_dataset_id <- function(dataset_id) {
 
 # 4. Download functions -----
 
-#' Download dataset with error handling
+#' Check if ISTAT data is valid
 #'
-#' Wrapper around download_istat_data with proper error handling for targets.
-#' Timestamps are automatically tracked by the targets store.
+#' Validates that data is a proper data.table with required structure.
+#' Use before deciding whether to cache or return data.
+#'
+#' @param data Object to validate
+#' @param min_rows Minimum number of rows required (default 1)
+#'
+#' @return Logical TRUE if data is valid, FALSE otherwise
+is_valid_istat_data <- function(data, min_rows = 1L) {
+  if (is.null(data)) return(FALSE)
+  if (!data.table::is.data.table(data)) return(FALSE)
+  if (nrow(data) < min_rows) return(FALSE)
+  # Check for required SDMX columns
+  required <- c("ObsDimension", "ObsValue")
+  if (!all(required %in% names(data))) return(FALSE)
+  return(TRUE)
+}
+
+#' Download dataset with cache fallback
+#'
+#' Downloads dataset with proper error handling. If download fails but valid
+#' cached data exists in targets store, returns the cached version to prevent
+#' overwriting valid data with NULL/error results.
 #'
 #' @param dataset_id Character string with dataset ID
 #' @param start_time Character string with start period
 #' @param api_status Logical indicating if API is accessible
+#' @param targets_dir Path to targets objects directory (default: "_targets/objects")
 #'
-#' @return data.table with downloaded data or NULL on failure
-download_dataset_safe <- function(dataset_id, start_time, api_status) {
+#' @return data.table with downloaded data, cached data on API failure,
+#'   or stops with error if no valid data available
+download_dataset_safe <- function(dataset_id, start_time, api_status,
+                                  targets_dir = "_targets/objects") {
+  # Construct the target object filename
+  target_name <- paste0("data_", dataset_id)
+  cached_file <- file.path(targets_dir, target_name)
+
+  # Helper function to read and validate cached data
+  read_cached <- function() {
+    if (file.exists(cached_file)) {
+      cached <- tryCatch(readRDS(cached_file), error = function(e) NULL)
+      if (is_valid_istat_data(cached)) {
+        return(cached)
+      }
+    }
+    NULL
+  }
+
+  # If API not accessible, try to use cache
   if (!api_status) {
-    warning("API not accessible, skipping dataset: ", dataset_id)
-    return(NULL)
+    cached_data <- read_cached()
+    if (!is.null(cached_data)) {
+      message("API not accessible. Using cached data for: ", dataset_id,
+              " (", nrow(cached_data), " rows)")
+      return(cached_data)
+    }
+    stop("API not accessible and no valid cached data for: ", dataset_id)
   }
 
   message("Downloading dataset: ", dataset_id)
 
-  tryCatch({
+  # Attempt download
+  downloaded_data <- tryCatch({
     data <- istatlab::download_istat_data(
       dataset_id = dataset_id,
       start_time = start_time,
       verbose = TRUE
     )
 
-    if (is.null(data) || nrow(data) == 0) {
-      warning("No data returned for dataset: ", dataset_id)
-      return(NULL)
+    # Validate downloaded data - return NULL to tryCatch (not the function)
+    if (!is_valid_istat_data(data)) {
+      warning("Download returned invalid/empty data for: ", dataset_id)
+      NULL  # Don't use return() inside tryCatch - it exits the whole function!
+    } else {
+      message("Successfully downloaded ", nrow(data), " rows for dataset: ", dataset_id)
+      data
     }
 
-    message("Successfully downloaded ", nrow(data), " rows for dataset: ", dataset_id)
-    return(data)
-
   }, error = function(e) {
-    warning("Failed to download dataset ", dataset_id, ": ", e$message)
-    return(NULL)
+    warning("Download error for ", dataset_id, ": ", e$message)
+    NULL
   })
+
+  # If download succeeded with valid data, return it
+  if (!is.null(downloaded_data)) {
+    return(downloaded_data)
+  }
+
+  # Download failed - try cache fallback
+  cached_data <- read_cached()
+  if (!is.null(cached_data)) {
+    message("Download failed. Preserving cached data for: ", dataset_id,
+            " (", nrow(cached_data), " rows)")
+    return(cached_data)
+  }
+
+  # No cached data available - this is a real failure
+  stop("Download failed and no valid cached data available for: ", dataset_id)
 }
 
 #' Apply codelist labels to data
