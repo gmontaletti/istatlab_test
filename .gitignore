@@ -1,0 +1,24 @@
+# renv
+renv/library/
+renv/local/
+renv/cellar/
+renv/lock/
+renv/python/
+renv/staging/
+
+# targets
+_targets/
+
+# R artifacts
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj.user
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Cache and temp files
+meta/data/
+*.rds.bak
