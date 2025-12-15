@@ -31,12 +31,8 @@ start_time <- "2000"
 # ISTAT API requires rate limiting to avoid being blocked
 rate_limit_delay <- 12
 
-# Maximum age in days before data is considered stale
-# Used as fallback when API is unreachable
-max_age_days <- 4 * 7  # 28 days
-
 # Force download: set to TRUE to bypass update checks and re-download all datasets
-force_download <- TRUE
+force_download <- FALSE
 
 # 1a. Expand dataset codes to full IDs -----
 # This happens BEFORE pipeline execution to get static list for tar_map()
@@ -57,7 +53,6 @@ if (is_first_run) {
   update_status <- check_multiple_datasets_updated(
     dataset_ids,
     rate_limit_delay = rate_limit_delay,
-    max_age_days = max_age_days,
     force_download = force_download,
     verbose = TRUE
   )

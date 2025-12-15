@@ -9,7 +9,7 @@ targets::tar_meta(fields = warnings, complete_only = TRUE)
 avvisi <- targets::tar_meta(fields = warnings, complete_only = TRUE)
 targets::tar_visnetwork()
 tar_objects()
-dt <- tar_read(labeled_534_50)
+dt <- tar_read(data_155_318)
 
 tar_read_raw("labeled_data")
 targets::tar_load_everything()

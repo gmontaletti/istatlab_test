@@ -46,14 +46,19 @@ get_targets_timestamps <- function(targets_dir = "_targets/objects") {
 #' Checks ISTAT API to see if datasets have been updated since last download.
 #' Uses SDMX updatedAfter parameter - queries API for data modified after
 #' the last download timestamp. Empty response means no updates.
-#' If the API is unreachable, uses time-based fallback to decide if data needs updating.
+#'
+#' Conservative download rules:
+#' - API unreachable: always skip (use cached data if available)
+#' - API reachable + updates exist: download
+#' - API reachable + no updates: skip
+#' - Never downloaded + API works: download
+#' - Never downloaded + API unreachable: skip
 #'
 #' @param dataset_ids Character vector of dataset IDs to check
 #' @param targets_dir Path to targets objects directory (default: "_targets/objects")
 #' @param rate_limit_delay Seconds to wait between API calls (default: 12)
 #' @param timeout Timeout in seconds for each API call (default: 60)
-#' @param max_age_days Maximum age in days before data is considered stale when API is unreachable (default: 28 days, i.e., 4 weeks)
-#' @param force_download Logical; if TRUE, mark all datasets as needing download regardless of API status or age (default: FALSE)
+#' @param force_download Logical; if TRUE, mark all datasets as needing download regardless of API status (default: FALSE)
 #' @param verbose Logical indicating whether to print progress messages
 #'
 #' @return data.table with columns: dataset_id, last_download, has_updates, reason
@@ -61,7 +66,6 @@ check_multiple_datasets_updated <- function(dataset_ids,
                                            targets_dir = "_targets/objects",
                                            rate_limit_delay = 12,
                                            timeout = 60,
-                                           max_age_days = 4 * 7,
                                            force_download = FALSE,
                                            verbose = TRUE) {
 
@@ -69,7 +73,6 @@ check_multiple_datasets_updated <- function(dataset_ids,
   local_timestamps <- get_targets_timestamps(targets_dir)
 
   # Force download: skip all checks and mark all datasets as needing updates
-
   if (force_download) {
     if (verbose) {
       message("Force download enabled: marking all ", length(dataset_ids), " datasets for download")
@@ -90,7 +93,7 @@ check_multiple_datasets_updated <- function(dataset_ids,
   results <- list()
 
   for (i in seq_along(dataset_ids)) {
-    dataset_id <- dataset_ids[i]
+    ds_id <- dataset_ids[i]
 
     # Rate limiting between requests
     if (i > 1) {
@@ -98,33 +101,47 @@ check_multiple_datasets_updated <- function(dataset_ids,
     }
 
     if (verbose) {
-      message("Checking dataset ", i, "/", length(dataset_ids), ": ", dataset_id)
+      message("Checking dataset ", i, "/", length(dataset_ids), ": ", ds_id)
     }
 
     # Get local timestamp for this dataset
-    local_time <- local_timestamps[dataset_id == dataset_id, last_download]
+    # Note: use ds_id (not dataset_id) to avoid data.table column name collision
+    local_time <- local_timestamps[dataset_id == ds_id, last_download]
     if (length(local_time) == 0 || is.na(local_time[1])) {
       local_time <- NULL
     } else {
       local_time <- local_time[1]
     }
 
-    # Use SDMX updatedAfter to check for updates
-    if (is.null(local_time)) {
-      # First download needed
-      if (verbose) message("  First download needed")
-      results[[i]] <- data.table::data.table(
-        dataset_id = dataset_id,
-        has_updates = TRUE,
-        last_download = as.POSIXct(NA),
-        reason = "first_download"
-      )
-    } else {
-      # Check using SDMX updatedAfter parameter
-      tryCatch({
-        # Build URL with updatedAfter parameter
+    # Check API for updates
+    tryCatch({
+      if (is.null(local_time)) {
+        # First download: check if API is reachable by querying metadata
         url <- istatlab::build_istat_url("data",
-                                         dataset_id = dataset_id,
+                                         dataset_id = ds_id,
+                                         start_time = "2024")
+
+        # Set timeout
+        old_timeout <- getOption("timeout")
+        on.exit(options(timeout = old_timeout), add = TRUE)
+        options(timeout = timeout)
+
+        # Try to reach API (just need to confirm connectivity)
+        result <- readsdmx::read_sdmx(url)
+
+        if (verbose) message("  First download - API reachable, will download")
+
+        results[[i]] <- data.table::data.table(
+          dataset_id = ds_id,
+          has_updates = TRUE,
+          last_download = as.POSIXct(NA),
+          reason = "first_download"
+        )
+
+      } else {
+        # Existing data: check for updates using updatedAfter
+        url <- istatlab::build_istat_url("data",
+                                         dataset_id = ds_id,
                                          updated_after = local_time)
 
         # Set timeout
@@ -137,46 +154,38 @@ check_multiple_datasets_updated <- function(dataset_ids,
         has_updates <- !is.null(result) && nrow(result) > 0
 
         if (verbose) {
-          msg <- if (has_updates) "  Updates available" else "  No updates"
+          msg <- if (has_updates) "  Updates available - will download" else "  No updates - skip"
           message(msg)
         }
 
         results[[i]] <- data.table::data.table(
-          dataset_id = dataset_id,
+          dataset_id = ds_id,
           has_updates = has_updates,
           last_download = local_time,
           reason = if (has_updates) "data_modified" else "no_updates"
         )
+      }
 
-      }, error = function(e) {
-        # Fallback: use time-based threshold when API is unreachable
-        if (!is.null(local_time)) {
-          age_days <- as.numeric(difftime(Sys.time(), local_time, units = "days"))
-          has_updates <- age_days > max_age_days
-          reason <- if (has_updates) {
-            paste0("api_unreachable_data_older_than_", max_age_days, "_days")
-          } else {
-            paste0("api_unreachable_data_recent_", round(age_days, 1), "_days")
-          }
-        } else {
-          has_updates <- TRUE
-          reason <- "api_unreachable_first_download"
-        }
+    }, error = function(e) {
+      # API unreachable: always skip download
+      if (verbose) {
+        message("  API unreachable: ", e$message)
+        message("  Skip download (conservative mode)")
+      }
 
-        if (verbose) {
-          message("  API unreachable: ", e$message)
-          message("  Using time-based fallback (max age: ", max_age_days, " days)")
-          message("  Result: ", if (has_updates) "needs update" else "skip (recent data)")
-        }
+      reason <- if (is.null(local_time)) {
+        "api_unreachable_first_download_skipped"
+      } else {
+        "api_unreachable_skip"
+      }
 
-        results[[i]] <<- data.table::data.table(
-          dataset_id = dataset_id,
-          has_updates = has_updates,
-          last_download = local_time,
-          reason = reason
-        )
-      })
-    }
+      results[[i]] <<- data.table::data.table(
+        dataset_id = ds_id,
+        has_updates = FALSE,
+        last_download = local_time,
+        reason = reason
+      )
+    })
   }
 
   results_dt <- data.table::rbindlist(results)
