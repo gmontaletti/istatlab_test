@@ -39,7 +39,49 @@ get_targets_timestamps <- function(targets_dir = "_targets/objects") {
   )
 }
 
-# 2. Update checking functions -----
+# 2. API connectivity functions -----
+
+#' Wait for ISTAT API Connectivity with Retry
+#'
+#' Waits for the ISTAT API to become accessible, retrying at regular intervals
+#' up to a maximum time limit. Useful for scheduled pipelines that should wait
+#' for API availability before proceeding.
+#'
+#' @param max_hours Maximum hours to wait before giving up (default 12)
+#' @param check_interval_minutes Minutes between connectivity checks (default 15)
+#' @param verbose Logical; print status messages (default TRUE)
+#'
+#' @return TRUE if API becomes accessible, stops with error if max time exceeded
+#' @export
+wait_for_api_connectivity <- function(max_hours = 12,
+                                      check_interval_minutes = 15,
+                                      verbose = TRUE) {
+  max_attempts <- ceiling((max_hours * 60) / check_interval_minutes)
+
+  for (attempt in seq_len(max_attempts)) {
+    result <- istatlab::test_endpoint_connectivity("data", timeout = 30, verbose = FALSE)
+
+    if (result$accessible[1]) {
+      if (verbose) {
+        message("API ISTAT raggiungibile dopo ", attempt, " tentativo/i")
+      }
+      return(TRUE)
+    }
+
+    if (verbose) {
+      message("API non raggiungibile. Tentativo ", attempt, "/", max_attempts,
+              ". Prossimo tentativo tra ", check_interval_minutes, " minuti.")
+    }
+
+    if (attempt < max_attempts) {
+      Sys.sleep(check_interval_minutes * 60)
+    }
+  }
+
+  stop("API ISTAT non raggiungibile dopo ", max_hours, " ore di tentativi")
+}
+
+# 3. Update checking functions -----
 
 #' Check if multiple datasets have been updated
 #'
@@ -113,79 +155,100 @@ check_multiple_datasets_updated <- function(dataset_ids,
       local_time <- local_time[1]
     }
 
-    # Check API for updates
-    tryCatch({
-      if (is.null(local_time)) {
-        # First download: check if API is reachable by querying metadata
-        url <- istatlab::build_istat_url("data",
-                                         dataset_id = ds_id,
-                                         start_time = "2024")
+    # Check API for updates using new istatlab structured results
+    if (is.null(local_time)) {
+      # First download: check if API is reachable
+      result <- istatlab::download_istat_data(
+        dataset_id = ds_id,
+        start_time = "2024",
+        timeout = timeout,
+        verbose = FALSE,
+        return_result = TRUE
+      )
 
-        # Set timeout
-        old_timeout <- getOption("timeout")
-        on.exit(options(timeout = old_timeout), add = TRUE)
-        options(timeout = timeout)
-
-        # Try to reach API (just need to confirm connectivity)
-        result <- readsdmx::read_sdmx(url)
-
+      if (result$success) {
         if (verbose) message("  First download - API reachable, will download")
-
         results[[i]] <- data.table::data.table(
           dataset_id = ds_id,
           has_updates = TRUE,
           last_download = as.POSIXct(NA),
           reason = "first_download"
         )
-
-      } else {
-        # Existing data: check for updates using updatedAfter
-        url <- istatlab::build_istat_url("data",
-                                         dataset_id = ds_id,
-                                         updated_after = local_time)
-
-        # Set timeout
-        old_timeout <- getOption("timeout")
-        on.exit(options(timeout = old_timeout), add = TRUE)
-        options(timeout = timeout)
-
-        # Query API - empty result means no updates
-        result <- readsdmx::read_sdmx(url)
-        has_updates <- !is.null(result) && nrow(result) > 0
-
+      } else if (result$is_timeout) {
         if (verbose) {
-          msg <- if (has_updates) "  Updates available - will download" else "  No updates - skip"
-          message(msg)
+          message("  API timeout (exit code: ", result$exit_code, ")")
+          message("  Skip download (conservative mode)")
         }
-
         results[[i]] <- data.table::data.table(
           dataset_id = ds_id,
-          has_updates = has_updates,
-          last_download = local_time,
-          reason = if (has_updates) "data_modified" else "no_updates"
+          has_updates = FALSE,
+          last_download = as.POSIXct(NA),
+          reason = "api_timeout_first_download_skipped"
+        )
+      } else {
+        if (verbose) {
+          message("  API error: ", result$message)
+          message("  Skip download (conservative mode)")
+        }
+        results[[i]] <- data.table::data.table(
+          dataset_id = ds_id,
+          has_updates = FALSE,
+          last_download = as.POSIXct(NA),
+          reason = "api_unreachable_first_download_skipped"
         )
       }
 
-    }, error = function(e) {
-      # API unreachable: always skip download
-      if (verbose) {
-        message("  API unreachable: ", e$message)
-        message("  Skip download (conservative mode)")
-      }
-
-      reason <- if (is.null(local_time)) {
-        "api_unreachable_first_download_skipped"
-      } else {
-        "api_unreachable_skip"
-      }
-
-      results[[i]] <<- data.table::data.table(
+    } else {
+      # Existing data: check for updates using updatedAfter
+      result <- istatlab::download_istat_data(
         dataset_id = ds_id,
-        has_updates = FALSE,
-        last_download = local_time,
-        reason = reason
+        updated_after = local_time,
+        timeout = timeout,
+        verbose = FALSE,
+        return_result = TRUE
       )
-    })
+
+      if (result$success && !is.null(result$data) && nrow(result$data) > 0) {
+        if (verbose) message("  Updates available - will download")
+        results[[i]] <- data.table::data.table(
+          dataset_id = ds_id,
+          has_updates = TRUE,
+          last_download = local_time,
+          reason = "data_modified"
+        )
+      } else if (result$success) {
+        # API returned success but no data = no updates
+        if (verbose) message("  No updates - skip")
+        results[[i]] <- data.table::data.table(
+          dataset_id = ds_id,
+          has_updates = FALSE,
+          last_download = local_time,
+          reason = "no_updates"
+        )
+      } else if (result$is_timeout) {
+        if (verbose) {
+          message("  API timeout (exit code: ", result$exit_code, ")")
+          message("  Skip download (conservative mode)")
+        }
+        results[[i]] <- data.table::data.table(
+          dataset_id = ds_id,
+          has_updates = FALSE,
+          last_download = local_time,
+          reason = "api_timeout_skip"
+        )
+      } else {
+        if (verbose) {
+          message("  API error: ", result$message)
+          message("  Skip download (conservative mode)")
+        }
+        results[[i]] <- data.table::data.table(
+          dataset_id = ds_id,
+          has_updates = FALSE,
+          last_download = local_time,
+          reason = "api_unreachable_skip"
+        )
+      }
+    }
   }
 
   results_dt <- data.table::rbindlist(results)
@@ -199,7 +262,7 @@ check_multiple_datasets_updated <- function(dataset_ids,
   return(results_dt)
 }
 
-# 3. Helper functions -----
+# 4. Helper functions -----
 
 #' Extract Root Dataset ID from Compound ID
 #'
@@ -216,7 +279,7 @@ extract_root_dataset_id <- function(dataset_id) {
   return(dataset_id)
 }
 
-# 4. Download functions -----
+# 5. Download functions -----
 
 #' Check if ISTAT data is valid
 #'
@@ -280,34 +343,32 @@ download_dataset_safe <- function(dataset_id, start_time, api_status,
 
   message("Downloading dataset: ", dataset_id)
 
-  # Attempt download
-  downloaded_data <- tryCatch({
-    data <- istatlab::download_istat_data(
-      dataset_id = dataset_id,
-      start_time = start_time,
-      verbose = TRUE
-    )
+  # Attempt download using new structured result API
+  result <- istatlab::download_istat_data(
+    dataset_id = dataset_id,
+    start_time = start_time,
+    verbose = TRUE,
+    return_result = TRUE
+  )
 
-    # Validate downloaded data - return NULL to tryCatch (not the function)
-    if (!is_valid_istat_data(data)) {
-      warning("Download returned invalid/empty data for: ", dataset_id)
-      NULL  # Don't use return() inside tryCatch - it exits the whole function!
-    } else {
-      message("Successfully downloaded ", nrow(data), " rows for dataset: ", dataset_id)
-      data
-    }
-
-  }, error = function(e) {
-    warning("Download error for ", dataset_id, ": ", e$message)
-    NULL
-  })
-
-  # If download succeeded with valid data, return it
-  if (!is.null(downloaded_data)) {
-    return(downloaded_data)
+  # Check result using structured istat_result object
+  if (result$success && is_valid_istat_data(result$data)) {
+    md5_info <- if (!is.na(result$md5)) paste0(" (MD5: ", substr(result$md5, 1, 8), "...)") else ""
+    message("Successfully downloaded ", nrow(result$data), " rows for dataset: ", dataset_id, md5_info)
+    return(result$data)
   }
 
-  # Download failed - try cache fallback
+  # Download failed - distinguish between timeout and other errors
+  if (result$is_timeout) {
+    warning("Timeout downloading ", dataset_id, " (exit code: ", result$exit_code, ")")
+  } else if (!result$success) {
+    warning("Download error for ", dataset_id, ": ", result$message,
+            " (exit code: ", result$exit_code, ")")
+  } else {
+    warning("Download returned invalid/empty data for: ", dataset_id)
+  }
+
+  # Try cache fallback
   cached_data <- read_cached()
   if (!is.null(cached_data)) {
     message("Download failed. Preserving cached data for: ", dataset_id,
@@ -318,6 +379,113 @@ download_dataset_safe <- function(dataset_id, start_time, api_status,
   # No cached data available - this is a real failure
   stop("Download failed and no valid cached data available for: ", dataset_id)
 }
+
+#' Download Dataset Split by Frequency with Cache Fallback
+#'
+#' Downloads a dataset split by frequency using download_istat_data_by_freq(),
+#' then combines all frequencies into a single data.table. Falls back to cached
+#' data if download fails.
+#'
+#' @param dataset_id Character string with dataset ID (root code)
+#' @param start_time Character string with start date (format: "YYYY-MM-DD" or "YYYY")
+#' @param check_update Logical; check LAST_UPDATE before downloading (default TRUE)
+#' @param targets_dir Path to targets objects directory (default "_targets/objects")
+#' @param verbose Logical; print status messages (default TRUE)
+#'
+#' @return data.table with all frequencies combined, or cached data on failure
+download_dataset_by_freq_safe <- function(dataset_id,
+                                          start_time,
+                                          check_update = TRUE,
+                                          targets_dir = "_targets/objects",
+                                          verbose = TRUE) {
+  # Construct the target object filename
+  target_name <- paste0("data_", dataset_id)
+  cached_file <- file.path(targets_dir, target_name)
+
+  # Helper function to read and validate cached data
+  read_cached <- function() {
+    if (file.exists(cached_file)) {
+      cached <- tryCatch(readRDS(cached_file), error = function(e) NULL)
+      if (is_valid_istat_data(cached)) {
+        return(cached)
+      }
+    }
+    NULL
+  }
+
+  # Check LAST_UPDATE if requested
+  if (check_update) {
+    cached_data <- read_cached()
+    if (!is.null(cached_data)) {
+      # Get LAST_UPDATE from ISTAT
+      last_update <- tryCatch({
+        istatlab::get_dataset_last_update(dataset_id)
+      }, error = function(e) NULL)
+
+      # Get cached file modification time
+      if (!is.null(last_update) && file.exists(cached_file)) {
+        cache_mtime <- file.info(cached_file)$mtime
+        if (last_update <= cache_mtime) {
+          if (verbose) {
+            message("Dataset ", dataset_id, " non aggiornato dall'ultimo download. Skip.")
+          }
+          return(cached_data)
+        }
+      }
+    }
+  }
+
+  if (verbose) message("Download dataset: ", dataset_id, " (split per frequenza)")
+
+  # Attempt download split by frequency
+  data_list <- tryCatch({
+    istatlab::download_istat_data_by_freq(
+      dataset_id = dataset_id,
+      start_time = start_time,
+      verbose = verbose
+    )
+  }, error = function(e) {
+    warning("Errore download ", dataset_id, ": ", e$message)
+    NULL
+  })
+
+  # Process results
+  if (!is.null(data_list) && length(data_list) > 0) {
+    # Add frequency column and combine
+    combined_list <- lapply(names(data_list), function(freq_name) {
+      dt <- data_list[[freq_name]]
+      if (!is.null(dt) && nrow(dt) > 0) {
+        dt[, FREQ := freq_name]
+        return(dt)
+      }
+      NULL
+    })
+
+    # Remove NULLs and combine
+    combined_list <- combined_list[!sapply(combined_list, is.null)]
+
+    if (length(combined_list) > 0) {
+      result <- data.table::rbindlist(combined_list, fill = TRUE)
+      if (verbose) {
+        message("Download completato: ", nrow(result), " righe, ",
+                length(combined_list), " frequenze")
+      }
+      return(result)
+    }
+  }
+
+  # Download failed - try cache fallback
+  cached_data <- read_cached()
+  if (!is.null(cached_data)) {
+    warning("Download fallito. Uso dati in cache per: ", dataset_id,
+            " (", nrow(cached_data), " righe)")
+    return(cached_data)
+  }
+
+  stop("Download fallito e nessun dato in cache per: ", dataset_id)
+}
+
+# 6. Data processing functions -----
 
 #' Apply codelist labels to data
 #'

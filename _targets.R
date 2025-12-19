@@ -21,11 +21,12 @@ dataset_codes <- c(
 )
 
 # Set to TRUE to automatically expand root codes to all matching datasets
-# Set to FALSE to download only the exact codes specified
-expand_code <- TRUE
+# Set to FALSE to download only the exact codes specified (solo codici radice)
+expand_code <- FALSE
 
-# Optional: start time filter (empty string = all available data)
-start_time <- "2000"
+# Start date for data download (full date format for filter_by_time compatibility)
+# Data di inizio per il download (formato data completo per compatibilità con filter_by_time)
+start_time <- "2000-01-01"
 
 # Rate limit delay for API calls (seconds between requests)
 # ISTAT API requires rate limiting to avoid being blocked
@@ -87,26 +88,29 @@ list(
     command = start_time
   ),
 
-  # Check API connectivity before downloading
+  # Check API connectivity before downloading (with retry mechanism)
+  # Verifica la connettività API con meccanismo di retry (attende fino a 12 ore)
   tar_target(
     name = api_status,
-    command = check_istat_api(verbose = TRUE, skip = TRUE)
+    command = wait_for_api_connectivity(max_hours = 12, check_interval_minutes = 15, verbose = TRUE)
   ),
 
   # Download metadata (dataflows list)
+  # Scarica i metadati (lista dei dataflows)
   tar_target(
     name = metadata,
     command = {
-      if (!api_status) stop("ISTAT API is not accessible")
+      if (!api_status) stop("ISTAT API non raggiungibile")
       download_metadata()
     }
   ),
 
   # Download codelists for all datasets
+  # Scarica le codelists per tutti i dataset
   tar_target(
     name = codelists,
     command = {
-      if (!api_status) stop("ISTAT API is not accessible")
+      if (!api_status) stop("ISTAT API non raggiungibile")
       download_codelists(dataset_ids)
     }
   ),
@@ -117,13 +121,15 @@ list(
     values = list(dataset_id = datasets_to_download),
     names = dataset_id,
 
-    # Download raw data for this dataset
+    # Download raw data for this dataset split by frequency (M, Q, A)
+    # Scarica i dati grezzi per questo dataset suddivisi per frequenza (M, Q, A)
     tar_target(
       name = data,
-      command = download_dataset_safe(
+      command = download_dataset_by_freq_safe(
         dataset_id = dataset_id,
         start_time = config_start_time,
-        api_status = api_status
+        check_update = TRUE,
+        verbose = TRUE
       )
     ),
 
