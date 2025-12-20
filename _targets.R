@@ -14,10 +14,21 @@ tar_source()
 # User-configurable list of dataset codes (root codes that will be expanded)
 # Modify this vector to change which datasets are downloaded
 dataset_codes <- c(
-    "534_50"
+    "534_50" # Posizioni lavorative - Imprese con almeno 500 dipendenti
+   , "534_49" # Ore lavorate - Imprese con almeno 500 dipendenti
   , "155_318" # retribuzioni contrattuali
   , "534_1037" # ore lavorate
   , "534_49" # Ore lavorate - will expand to include all 534_49* variants
+  , "150_908" # "Forze di lavoro",
+  , "150_915" # = "Tasso di occupazione",
+  , "150_916" # = "Tasso di attività",
+  , "150_938" # = "Occupati (migliaia)",
+  , "151_914" # = "Tasso di disoccupazione",
+  , "151_929" # = "Disoccupati",
+  , "152_913" #= "Tasso di inattività",
+  , "152_928" #= "Inattivi",
+  , "532_930" #= "Popolazione per condizione professionale"
+
 )
 
 # Set to TRUE to automatically expand root codes to all matching datasets
@@ -28,48 +39,13 @@ expand_code <- FALSE
 # Data di inizio per il download (formato data completo per compatibilità con filter_by_time)
 start_time <- "2000-01-01"
 
-# Rate limit delay for API calls (seconds between requests)
-# ISTAT API requires rate limiting to avoid being blocked
-rate_limit_delay <- 12
-
-# Force download: set to TRUE to bypass update checks and re-download all datasets
-force_download <- FALSE
-
 # 1a. Expand dataset codes to full IDs -----
 # This happens BEFORE pipeline execution to get static list for tar_map()
 dataset_ids <- expand_dataset_ids(dataset_codes, expand = expand_code)
 
-# 1b. Check for dataset updates (with rate limiting) -----
-# Uses targets store timestamps to detect first run and compare with API
-
-# Get existing timestamps from targets store
-local_timestamps <- get_targets_timestamps()
-is_first_run <- nrow(local_timestamps) == 0
-
-if (is_first_run) {
-  message("First run: downloading all datasets")
-  datasets_to_download <- dataset_ids
-} else {
-  message("Checking for dataset updates...")
-  update_status <- check_multiple_datasets_updated(
-    dataset_ids,
-    rate_limit_delay = rate_limit_delay,
-    force_download = force_download,
-    verbose = TRUE
-  )
-
-  # Filter to datasets needing download
-  datasets_to_download <- update_status[has_updates == TRUE]$dataset_id
-
-  if (length(datasets_to_download) == 0) {
-    message("All datasets are up to date. No downloads needed.")
-    # Keep at least one dataset to avoid empty tar_map (use first one)
-    datasets_to_download <- dataset_ids[1]
-  } else {
-    message(sprintf("%d of %d datasets have updates",
-                    length(datasets_to_download), length(dataset_ids)))
-  }
-}
+# All datasets will be checked for updates during download
+# download_dataset_by_freq_safe() checks LAST_UPDATE and skips unchanged datasets
+datasets_to_download <- dataset_ids
 
 # 2. Set target options -----
 tar_option_set(

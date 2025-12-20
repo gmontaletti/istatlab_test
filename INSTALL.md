@@ -127,6 +127,50 @@ targets::tar_outdated()
 targets::tar_read(target_name)
 ```
 
+## Updating on Remote Machines
+
+If you already have the project installed on a remote machine, follow these steps to update to the latest version:
+
+### Step 1: Pull latest changes from GitHub
+
+```bash
+cd istatlab_test
+git pull origin main
+```
+
+### Step 2: Synchronize dependencies
+
+Check if any dependencies have changed and restore if needed:
+
+```r
+# Check renv status
+renv::status()
+
+# If packages are out of sync, restore them
+renv::restore()
+```
+
+### Step 3: Re-run the workflow
+
+```r
+# Check what needs to be updated
+targets::tar_outdated()
+
+# Run the pipeline
+targets::tar_make()
+```
+
+### Automating updates (optional)
+
+For scheduled updates on remote servers, you can use this command sequence:
+
+```bash
+cd /path/to/istatlab_test && \
+git pull origin main && \
+R -e "renv::restore(prompt = FALSE)" && \
+R -e "targets::tar_make()"
+```
+
 ## Contact
 
 For issues or questions, contact:
