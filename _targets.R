@@ -88,31 +88,18 @@ list(
     command = start_time
   ),
 
-  # Check API connectivity before downloading (with retry mechanism)
-  # Verifica la connettività API con meccanismo di retry (attende fino a 12 ore)
-  tar_target(
-    name = api_status,
-    command = wait_for_api_connectivity(max_hours = 12, check_interval_minutes = 15, verbose = TRUE)
-  ),
-
   # Download metadata (dataflows list)
   # Scarica i metadati (lista dei dataflows)
   tar_target(
     name = metadata,
-    command = {
-      if (!api_status) stop("ISTAT API non raggiungibile")
-      download_metadata()
-    }
+    command = download_metadata()
   ),
 
   # Download codelists for all datasets
   # Scarica le codelists per tutti i dataset
   tar_target(
     name = codelists,
-    command = {
-      if (!api_status) stop("ISTAT API non raggiungibile")
-      download_codelists(dataset_ids)
-    }
+    command = download_codelists(dataset_ids)
   ),
 
   # Per-dataset targets: download and label each dataset separately

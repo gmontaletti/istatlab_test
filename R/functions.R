@@ -264,6 +264,24 @@ check_multiple_datasets_updated <- function(dataset_ids,
 
 # 4. Helper functions -----
 
+#' Random Rate Limit Delay
+#'
+#' Applies a random delay between API calls to avoid rate limiting.
+#'
+#' @param min_seconds Minimum delay in seconds (default 6)
+#' @param max_seconds Maximum delay in seconds (default 300)
+#' @param verbose Logical; print delay message (default TRUE)
+#'
+#' @return Invisible numeric with actual delay applied
+random_rate_limit_delay <- function(min_seconds = 6, max_seconds = 300, verbose = TRUE) {
+  delay <- runif(1, min = min_seconds, max = max_seconds)
+  if (verbose) {
+    message("Rate limit delay: ", round(delay, 1), " seconds...")
+  }
+  Sys.sleep(delay)
+  invisible(delay)
+}
+
 #' Extract Root Dataset ID from Compound ID
 #'
 #' Extracts the root dataset ID from compound ISTAT dataset IDs.
@@ -390,6 +408,9 @@ download_dataset_safe <- function(dataset_id, start_time, api_status,
 #' @param start_time Character string with start date (format: "YYYY-MM-DD" or "YYYY")
 #' @param check_update Logical; check LAST_UPDATE before downloading (default TRUE)
 #' @param targets_dir Path to targets objects directory (default "_targets/objects")
+#' @param apply_delay Logical; apply random delay before download (default TRUE)
+#' @param delay_min Minimum delay in seconds (default 6)
+#' @param delay_max Maximum delay in seconds (default 300)
 #' @param verbose Logical; print status messages (default TRUE)
 #'
 #' @return data.table with all frequencies combined, or cached data on failure
@@ -397,7 +418,14 @@ download_dataset_by_freq_safe <- function(dataset_id,
                                           start_time,
                                           check_update = TRUE,
                                           targets_dir = "_targets/objects",
+                                          apply_delay = TRUE,
+                                          delay_min = 6,
+                                          delay_max = 300,
                                           verbose = TRUE) {
+  # Apply random delay for rate limiting
+  if (apply_delay) {
+    random_rate_limit_delay(min_seconds = delay_min, max_seconds = delay_max, verbose = verbose)
+  }
   # Construct the target object filename
   target_name <- paste0("data_", dataset_id)
   cached_file <- file.path(targets_dir, target_name)
