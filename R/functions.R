@@ -116,6 +116,70 @@ extract_root_dataset_id <- function(dataset_id) {
   return(dataset_id)
 }
 
+#' Merge Incremental Data with Cached Data
+#'
+#' Combines new incremental data with existing cached data, replacing
+#' old observations that have been updated.
+#'
+#' @param old_data data.table with cached data
+#' @param new_data data.table with new incremental data
+#'
+#' @return data.table with merged data
+merge_incremental_data <- function(old_data, new_data) {
+  if (is.null(new_data) || nrow(new_data) == 0) return(old_data)
+  if (is.null(old_data) || nrow(old_data) == 0) return(new_data)
+
+  # Key columns = all dimension columns (exclude value and status columns)
+  exclude_cols <- c("ObsValue", "CONF_STATUS", "OBS_STATUS")
+  key_cols <- intersect(names(old_data), names(new_data))
+  key_cols <- setdiff(key_cols, exclude_cols)
+
+  # Anti-join: keep old rows NOT present in new data
+  old_unique <- old_data[!new_data, on = key_cols]
+
+  # Combine old unique + new data
+  result <- data.table::rbindlist(list(old_unique, new_data), use.names = TRUE, fill = TRUE)
+  return(result)
+}
+
+#' Get Latest Edition Value from ISTAT API
+#'
+#' Queries the availableconstraint endpoint to find available edition values
+#' and returns the latest (maximum) edition.
+#'
+#' @param dataset_id Character string with dataset ID
+#' @param verbose Logical; print status messages
+#'
+#' @return Character string with latest edition value, or NULL if not found
+get_latest_edition <- function(dataset_id, verbose = TRUE) {
+  # Query available constraints for the dataset
+  constraints <- tryCatch({
+    istatlab::get_available_constraints(dataset_id)
+  }, error = function(e) {
+    if (verbose) warning("Errore query edizioni: ", e$message)
+    NULL
+  })
+
+  if (is.null(constraints)) return(NULL)
+
+  # Find edition dimension (case-insensitive)
+  edition_col <- grep("^edition$", names(constraints), ignore.case = TRUE, value = TRUE)
+
+  if (length(edition_col) == 0) return(NULL)
+
+  # Get available edition values and return the max
+  editions <- unique(constraints[[edition_col[1]]])
+  editions <- editions[!is.na(editions)]
+
+  if (length(editions) == 0) return(NULL)
+
+  # Return latest (max) edition - works for numeric or date-like strings
+  latest <- max(editions, na.rm = TRUE)
+  if (verbose) message("Ultima edizione disponibile: ", latest)
+
+  return(as.character(latest))
+}
+
 # 4. Download functions -----
 
 #' Check if ISTAT data is valid
@@ -272,11 +336,99 @@ download_dataset_by_freq_safe <- function(dataset_id,
       # Get cached file modification time
       if (!is.null(last_update) && file.exists(cached_file)) {
         cache_mtime <- file.info(cached_file)$mtime
+
         if (last_update <= cache_mtime) {
-          if (verbose) {
-            message("Dataset ", dataset_id, " non aggiornato dall'ultimo download. Skip.")
-          }
+          if (verbose) message("Dataset ", dataset_id, " non aggiornato. Skip.")
           return(cached_data)
+        }
+
+        # Update detected - check for edition column
+        has_edition <- any(grepl("^edition$", names(cached_data), ignore.case = TRUE))
+
+        if (has_edition) {
+          # Dataset with editions - download only latest edition
+          if (verbose) message("Dataset con edizioni - download ultima edizione")
+
+          latest_edition <- get_latest_edition(dataset_id, verbose = verbose)
+
+          if (!is.null(latest_edition)) {
+            # Build filter for latest edition
+            dims <- tryCatch({
+              istatlab::get_dataset_dimensions(dataset_id)
+            }, error = function(e) NULL)
+
+            if (!is.null(dims)) {
+              edition_pos <- which(tolower(dims) == "edition")
+
+              if (length(edition_pos) > 0) {
+                # Build filter with edition in correct position
+                filter_parts <- rep("", length(dims))
+                filter_parts[edition_pos] <- latest_edition
+                edition_filter <- paste(filter_parts, collapse = ".")
+
+                data_list <- tryCatch({
+                  istatlab::download_istat_data_by_freq(
+                    dataset_id = dataset_id,
+                    filter = edition_filter,
+                    start_time = start_time,
+                    verbose = verbose
+                  )
+                }, error = function(e) {
+                  warning("Errore download edizione: ", e$message)
+                  NULL
+                })
+
+                if (!is.null(data_list) && length(data_list) > 0) {
+                  combined <- data.table::rbindlist(
+                    lapply(names(data_list), function(f) {
+                      dt <- data_list[[f]]
+                      if (!is.null(dt) && nrow(dt) > 0) dt[, FREQ := f]
+                      dt
+                    }), fill = TRUE
+                  )
+                  if (nrow(combined) > 0) {
+                    if (verbose) message("Download edizione completato: ", nrow(combined), " righe")
+                    return(combined)
+                  }
+                }
+              }
+            }
+          }
+          # Edition filter failed, continue to full download below
+          if (verbose) message("Filtro edizione fallito, provo download completo")
+
+        } else {
+          # No edition - use incremental update
+          incremental_date <- format(as.Date(cache_mtime), "%Y-%m-%d")
+          if (verbose) message("Aggiornamento incrementale da: ", incremental_date)
+
+          data_list <- tryCatch({
+            istatlab::download_istat_data_by_freq(
+              dataset_id = dataset_id,
+              incremental = incremental_date,
+              verbose = verbose
+            )
+          }, error = function(e) {
+            warning("Errore download incrementale: ", e$message)
+            NULL
+          })
+
+          if (!is.null(data_list) && length(data_list) > 0) {
+            combined <- data.table::rbindlist(
+              lapply(names(data_list), function(f) {
+                dt <- data_list[[f]]
+                if (!is.null(dt) && nrow(dt) > 0) dt[, FREQ := f]
+                dt
+              }), fill = TRUE
+            )
+            if (nrow(combined) > 0) {
+              result <- merge_incremental_data(cached_data, combined)
+              if (verbose) message("Merge completato: ", nrow(result), " righe totali")
+              return(result)
+            }
+          }
+          # Incremental failed, fall through to full download
+          if (verbose) message("Incrementale fallito, provo download completo")
         }
       }
     }
