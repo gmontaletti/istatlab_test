@@ -17,8 +17,8 @@ dataset_codes <- c(
     "534_50" # Posizioni lavorative - Imprese con almeno 500 dipendenti
    , "534_49" # Ore lavorate - Imprese con almeno 500 dipendenti
   , "155_318" # retribuzioni contrattuali
-  , "534_1037" # ore lavorate
-  , "534_49" # Ore lavorate - will expand to include all 534_49* variants
+  , "534_1037" # ore lavorat e imprese con dipe
+  , "534_1038" # posti vacanti
   , "150_908" # "Forze di lavoro",
   , "150_915" # = "Tasso di occupazione",
   , "150_916" # = "Tasso di attività",
@@ -29,8 +29,11 @@ dataset_codes <- c(
   , "152_928" #= "Inattivi",
   , "154_373" # imprese con dipendenti 
   , "532_930" #= "Popolazione per condizione professionale"
-
-)
+, "149_319" # temsione contrattuale
+, "149_327" # Orario contrattuale, ferie e altre riduzioni orarie - dipendenti a tempo pieno
+, "533_957" # RACLI  Retribuzioni orarie  dei dipendenti del settore privato
+ 
+ )
 
 # Set to TRUE to automatically expand root codes to all matching datasets
 # Set to FALSE to download only the exact codes specified (solo codici radice)
@@ -44,9 +47,9 @@ start_time <- "2000-01-01"
 # This happens BEFORE pipeline execution to get static list for tar_map()
 dataset_ids <- expand_dataset_ids(dataset_codes, expand = expand_code)
 
-# All datasets will be checked for updates during download
-# download_dataset_by_freq_safe() checks LAST_UPDATE and skips unchanged datasets
-datasets_to_download <- dataset_ids
+# 1b. Expand to dataset-frequency combinations -----
+# Creates data.frame with dataset_id, freq columns for two-level branching
+dataset_freq_combinations <- expand_dataset_freq_combinations(dataset_ids, verbose = TRUE)
 
 # 2. Set target options -----
 tar_option_set(
@@ -90,25 +93,26 @@ list(
     }
   ),
 
-  # Per-dataset targets: download and label each dataset separately
-  # Only processes datasets that need updates (or all on first run)
+  # Per-dataset-frequency targets: download and label each dataset-frequency separately
+  # Creates targets like: data_534_50_M, data_534_50_Q, labeled_534_50_M, etc.
   tar_map(
-    values = list(dataset_id = datasets_to_download),
-    names = dataset_id,
+    values = dataset_freq_combinations,
+    names = c("dataset_id", "freq"),
 
-    # Download raw data for this dataset split by frequency (M, Q, A)
-    # Scarica i dati grezzi per questo dataset suddivisi per frequenza (M, Q, A)
+    # Download raw data for this dataset-frequency combination
+    # Scarica i dati grezzi per questa combinazione dataset-frequenza
     tar_target(
       name = data,
-      command = download_dataset_by_freq_safe(
+      command = download_dataset_single_freq_safe(
         dataset_id = dataset_id,
+        freq = freq,
         start_time = config_start_time,
         check_update = TRUE,
         verbose = TRUE
       )
     ),
 
-    # Apply labels to this dataset (depends on codelists_refresh)
+    # Apply labels to this dataset-frequency (depends on codelists_refresh)
     tar_target(
       name = labeled,
       command = {
