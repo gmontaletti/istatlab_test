@@ -534,6 +534,132 @@ download_dataset_by_freq_safe <- function(dataset_id,
   stop("Download fallito e nessun dato in cache per: ", dataset_id)
 }
 
+#' Download Single Frequency Dataset with Cache Fallback
+#'
+#' Downloads a single frequency slice of a dataset. Uses per-frequency
+#' caching for independent update tracking. Designed for use with
+#' tar_map() two-level branching.
+#'
+#' @param dataset_id Character string with dataset ID
+#' @param freq Character string with frequency code (M, Q, A)
+#' @param start_time Character string with start date
+#' @param check_update Logical; check LAST_UPDATE before downloading (default TRUE)
+#' @param targets_dir Path to targets objects directory (default "_targets/objects")
+#' @param apply_delay Logical; apply random delay before download (default TRUE)
+#' @param delay_min Minimum delay in seconds (default 6)
+#' @param delay_max Maximum delay in seconds (default 300)
+#' @param verbose Logical; print status messages (default TRUE)
+#'
+#' @return data.table with single frequency data including FREQ column
+download_dataset_single_freq_safe <- function(dataset_id,
+                                               freq,
+                                               start_time,
+                                               check_update = TRUE,
+                                               targets_dir = "_targets/objects",
+                                               apply_delay = TRUE,
+                                               delay_min = 6,
+                                               delay_max = 300,
+                                               verbose = TRUE) {
+  # Apply random delay for rate limiting
+  if (apply_delay) {
+    random_rate_limit_delay(min_seconds = delay_min, max_seconds = delay_max, verbose = verbose)
+  }
+
+  # Construct frequency-specific target filename
+  target_name <- paste0("data_", dataset_id, "_", freq)
+  cached_file <- file.path(targets_dir, target_name)
+
+  # Helper to read cached data
+  read_cached <- function() {
+    if (file.exists(cached_file)) {
+      cached <- tryCatch(readRDS(cached_file), error = function(e) NULL)
+      if (is_valid_istat_data(cached)) {
+        return(cached)
+      }
+    }
+    NULL
+  }
+
+  # Check LAST_UPDATE if requested
+  if (check_update) {
+    cached_data <- read_cached()
+    if (!is.null(cached_data)) {
+      last_update <- tryCatch({
+        istatlab::get_dataset_last_update(dataset_id)
+      }, error = function(e) NULL)
+
+      if (!is.null(last_update) && file.exists(cached_file)) {
+        cache_mtime <- file.info(cached_file)$mtime
+
+        if (last_update <= cache_mtime) {
+          if (verbose) message("Dataset ", dataset_id, "_", freq, " non aggiornato. Skip.")
+          return(cached_data)
+        }
+
+        # Update detected - try incremental update
+        has_edition <- any(grepl("^edition$", names(cached_data), ignore.case = TRUE))
+
+        if (!has_edition) {
+          incremental_date <- format(as.Date(cache_mtime), "%Y-%m-%d")
+          if (verbose) message("Aggiornamento incrementale da: ", incremental_date)
+
+          incr_list <- tryCatch({
+            istatlab::download_istat_data_by_freq(
+              dataset_id = dataset_id,
+              incremental = incremental_date,
+              verbose = verbose
+            )
+          }, error = function(e) NULL)
+
+          if (!is.null(incr_list) && freq %in% names(incr_list)) {
+            new_data <- incr_list[[freq]]
+            if (!is.null(new_data) && nrow(new_data) > 0) {
+              new_data[, FREQ := freq]
+              result <- merge_incremental_data(cached_data, new_data)
+              if (verbose) message("Merge completato: ", nrow(result), " righe")
+              return(result)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (verbose) message("Download dataset: ", dataset_id, " freq: ", freq)
+
+  # Download using istatlab by_freq function
+  data_list <- tryCatch({
+    istatlab::download_istat_data_by_freq(
+      dataset_id = dataset_id,
+      start_time = start_time,
+      verbose = verbose
+    )
+  }, error = function(e) {
+    warning("Errore download ", dataset_id, ": ", e$message)
+    NULL
+  })
+
+  # Extract the requested frequency
+  if (!is.null(data_list) && freq %in% names(data_list)) {
+    result <- data_list[[freq]]
+    if (!is.null(result) && nrow(result) > 0) {
+      result[, FREQ := freq]
+      if (verbose) message("Download completato: ", nrow(result), " righe per ", freq)
+      return(result)
+    }
+  }
+
+  # Download failed - try cache fallback
+  cached_data <- read_cached()
+  if (!is.null(cached_data)) {
+    warning("Download fallito. Uso cache per: ", dataset_id, "_", freq,
+            " (", nrow(cached_data), " righe)")
+    return(cached_data)
+  }
+
+  stop("Download fallito e nessun dato in cache per: ", dataset_id, "_", freq)
+}
+
 # 5. Data processing functions -----
 
 #' Apply codelist labels to data
