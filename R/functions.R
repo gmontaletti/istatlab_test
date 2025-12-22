@@ -490,6 +490,7 @@ download_dataset_by_freq_safe <- function(dataset_id,
 #'
 #' Applies labels from codelists to create columns with both codes and labels.
 #' Automatically ensures codelists are available for the dataset before labeling.
+#' If labeling fails due to missing codes, refreshes codelists and retries.
 #'
 #' @param data data.table with raw ISTAT data
 #' @param codelists List of codelists from download_codelists()
@@ -501,14 +502,40 @@ apply_codelist_labels <- function(data, codelists) {
     return(data)
   }
 
-  # Make a copy to avoid modifying original
-  dt <- data.table::copy(data)
-
   # Get the dataset ID
-  dataset_id <- dt$id[1]
+  dataset_id <- data$id[1]
 
   # Ensure codelists are available for this dataset before labeling
   istatlab::ensure_codelists(dataset_id, verbose = FALSE)
+
+  # Try labeling with current codelists, refresh and retry on failure
+  result <- tryCatch({
+    apply_labels_internal(data, codelists, dataset_id)
+  }, error = function(e) {
+    message("Labeling failed: ", e$message)
+    message("Refreshing codelists for ", dataset_id, " and retrying...")
+
+    # Force refresh codelists for this dataset
+    fresh_codelists <- istatlab::download_codelists(dataset_id, force_update = TRUE)
+
+    # Retry with fresh codelists
+    apply_labels_internal(data, fresh_codelists, dataset_id)
+  })
+
+  return(result)
+}
+
+#' Internal function to apply labels (used by apply_codelist_labels)
+#'
+#' @param data data.table with raw ISTAT data
+#' @param codelists List of codelists
+#' @param dataset_id Dataset ID string
+#'
+#' @return data.table with labels applied
+#' @keywords internal
+apply_labels_internal <- function(data, codelists, dataset_id) {
+  # Make a copy to avoid modifying original
+  dt <- data.table::copy(data)
 
   codelist_key <- paste0("X", dataset_id)
 
@@ -553,16 +580,15 @@ apply_codelist_labels <- function(data, codelists) {
       # Create the label column name
       label_col <- paste0(dim_col, "_label")
 
-      # Create a named vector for fast lookup
-      label_lookup <- stats::setNames(matching_labels$it_description, matching_labels$id_description)
-
-      # Use simple vector lookup instead of join
-      dt[, (label_col) := label_lookup[get(dim_col)]]
+      # Create lookup table and merge (safer than vector indexing)
+      lookup_dt <- data.table::copy(matching_labels)
+      data.table::setnames(lookup_dt, c(dim_col, label_col))
+      dt <- merge(dt, lookup_dt, by = dim_col, all.x = TRUE)
 
       # Fill NA labels with the code itself
       dt[is.na(get(label_col)), (label_col) := get(dim_col)]
 
-      message("  Added labels for: ", dim_col, " (", length(label_lookup), " mappings)")
+      message("  Added labels for: ", dim_col, " (", nrow(matching_labels), " mappings)")
     }
   }
 
