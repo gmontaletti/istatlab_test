@@ -573,8 +573,9 @@ apply_labels_internal <- function(data, codelists, dataset_id) {
     # Look for codelist entries that match the values in this column
     unique_codes <- unique(dt[[dim_col]])
 
-    # Find matching labels in the codelist - get unique mappings only
-    matching_labels <- unique(cl[id_description %in% unique_codes, .(id_description, it_description)])
+    # Find matching labels in the codelist - keep only first occurrence per code
+    matching_labels <- cl[id_description %in% unique_codes, .(id_description, it_description)]
+    matching_labels <- matching_labels[!duplicated(id_description)]
 
     if (nrow(matching_labels) > 0) {
       # Create the label column name
@@ -583,6 +584,9 @@ apply_labels_internal <- function(data, codelists, dataset_id) {
       # Create lookup table and merge (safer than vector indexing)
       lookup_dt <- data.table::copy(matching_labels)
       data.table::setnames(lookup_dt, c(dim_col, label_col))
+      # Ensure join key types match
+      lookup_dt[[dim_col]] <- as.character(lookup_dt[[dim_col]])
+      dt[[dim_col]] <- as.character(dt[[dim_col]])
       dt <- merge(dt, lookup_dt, by = dim_col, all.x = TRUE)
 
       # Fill NA labels with the code itself
