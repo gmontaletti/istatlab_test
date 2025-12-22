@@ -22,3 +22,4 @@ Thumbs.db
 # Cache and temp files
 meta/data/
 *.rds.bak
+meta/
