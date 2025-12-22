@@ -116,6 +116,56 @@ extract_root_dataset_id <- function(dataset_id) {
   return(dataset_id)
 }
 
+#' Expand Dataset IDs to Frequency Combinations
+#'
+#' For each dataset ID, queries available frequencies and returns
+#' a data.frame with all dataset-frequency combinations for use
+#' in tar_map() two-level branching.
+#'
+#' @param dataset_ids Character vector of dataset IDs
+#' @param verbose Logical; print status messages (default TRUE)
+#'
+#' @return data.frame with columns: dataset_id, freq
+expand_dataset_freq_combinations <- function(dataset_ids, verbose = TRUE) {
+  if (verbose) message("Expanding dataset-frequency combinations...")
+
+  combinations <- lapply(dataset_ids, function(id) {
+    freqs <- tryCatch({
+      istatlab::get_available_frequencies(id)
+    }, error = function(e) {
+      if (verbose) warning("Could not get frequencies for ", id, ": ", e$message)
+      NULL
+    })
+
+    # Skip datasets with no available frequencies
+    if (is.null(freqs) || length(freqs) == 0) {
+      if (verbose) message("  ", id, ": no frequencies found, skipping")
+      return(NULL)
+    }
+
+    if (verbose) message("  ", id, ": ", paste(freqs, collapse = ", "))
+
+    data.frame(
+      dataset_id = id,
+      freq = freqs,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  result <- do.call(rbind, combinations)
+
+  if (is.null(result) || nrow(result) == 0) {
+    stop("No valid dataset-frequency combinations found")
+  }
+
+  if (verbose) {
+    message("Total combinations: ", nrow(result),
+            " (", length(unique(result$dataset_id)), " datasets)")
+  }
+
+  return(result)
+}
+
 #' Merge Incremental Data with Cached Data
 #'
 #' Combines new incremental data with existing cached data, replacing
