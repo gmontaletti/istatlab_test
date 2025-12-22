@@ -488,7 +488,8 @@ download_dataset_by_freq_safe <- function(dataset_id,
 
 #' Apply codelist labels to data
 #'
-#' Applies labels from codelists to create columns with both codes and labels
+#' Applies labels from codelists to create columns with both codes and labels.
+#' Automatically ensures codelists are available for the dataset before labeling.
 #'
 #' @param data data.table with raw ISTAT data
 #' @param codelists List of codelists from download_codelists()
@@ -505,6 +506,10 @@ apply_codelist_labels <- function(data, codelists) {
 
   # Get the dataset ID
   dataset_id <- dt$id[1]
+
+  # Ensure codelists are available for this dataset before labeling
+  istatlab::ensure_codelists(dataset_id, verbose = FALSE)
+
   codelist_key <- paste0("X", dataset_id)
 
   # Fallback to root ID if exact match not found

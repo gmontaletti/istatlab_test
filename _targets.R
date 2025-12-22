@@ -27,6 +27,7 @@ dataset_codes <- c(
   , "151_929" # = "Disoccupati",
   , "152_913" #= "Tasso di inattività",
   , "152_928" #= "Inattivi",
+  , "154_373" # imprese con dipendenti 
   , "532_930" #= "Popolazione per condizione professionale"
 
 )
@@ -78,6 +79,17 @@ list(
     command = download_codelists(dataset_ids)
   ),
 
+  # Refresh any expired codelists (staggered TTL check)
+  # Aggiorna le codelists scadute (controllo TTL scaglionato)
+  tar_target(
+    name = codelists_refresh,
+    command = {
+      result <- refresh_expired_codelists(verbose = TRUE)
+      message("Codelists refresh: ", result$refreshed, "/", result$total, " updated")
+      TRUE
+    }
+  ),
+
   # Per-dataset targets: download and label each dataset separately
   # Only processes datasets that need updates (or all on first run)
   tar_map(
@@ -96,10 +108,16 @@ list(
       )
     ),
 
-    # Apply labels to this dataset
+    # Apply labels to this dataset (depends on codelists_refresh)
     tar_target(
       name = labeled,
-      command = apply_codelist_labels(data, codelists)
+      command = {
+        # Ensure codelists are available before labeling
+        ensure_codelists(dataset_id, verbose = TRUE)
+        # Force dependency on codelists_refresh
+        stopifnot(codelists_refresh)
+        apply_codelist_labels(data, codelists)
+      }
     )
   )
 )
