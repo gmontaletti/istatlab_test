@@ -500,7 +500,20 @@ download_dataset_by_freq_safe <- function(dataset_id,
 
   # Process results
   if (!is.null(data_list) && length(data_list) > 0) {
-    # Add frequency column and combine
+    # Handle "ALL" fallback case - data already has FREQ column
+    if ("ALL" %in% names(data_list) && length(data_list) == 1) {
+      result <- data_list[["ALL"]]
+      if (!is.null(result) && nrow(result) > 0) {
+        if (verbose) {
+          freqs <- if ("FREQ" %in% names(result)) unique(result$FREQ) else "unknown"
+          message("Download completato (from ALL): ", nrow(result), " righe, ",
+                  "frequenze: ", paste(freqs, collapse = ", "))
+        }
+        return(result)
+      }
+    }
+
+    # Normal case: add frequency column and combine
     combined_list <- lapply(names(data_list), function(freq_name) {
       dt <- data_list[[freq_name]]
       if (!is.null(dt) && nrow(dt) > 0) {
@@ -607,12 +620,24 @@ download_dataset_single_freq_safe <- function(dataset_id,
             istatlab::download_istat_data_by_freq(
               dataset_id = dataset_id,
               incremental = incremental_date,
-              verbose = verbose
+              verbose = verbose,
+              freq = freq
             )
           }, error = function(e) NULL)
 
-          if (!is.null(incr_list) && freq %in% names(incr_list)) {
-            new_data <- incr_list[[freq]]
+          if (!is.null(incr_list)) {
+            new_data <- NULL
+            # Case 1: data already split by frequency
+            if (freq %in% names(incr_list)) {
+              new_data <- incr_list[[freq]]
+            }
+            # Case 2: fallback when frequency check failed - data returned as "ALL"
+            if (is.null(new_data) && "ALL" %in% names(incr_list) && !is.null(incr_list[["ALL"]])) {
+              all_data <- incr_list[["ALL"]]
+              if (nrow(all_data) > 0 && "FREQ" %in% names(all_data)) {
+                new_data <- all_data[FREQ == freq]
+              }
+            }
             if (!is.null(new_data) && nrow(new_data) > 0) {
               new_data[, FREQ := freq]
               result <- merge_incremental_data(cached_data, new_data)
@@ -627,12 +652,13 @@ download_dataset_single_freq_safe <- function(dataset_id,
 
   if (verbose) message("Download dataset: ", dataset_id, " freq: ", freq)
 
-  # Download using istatlab by_freq function
+  # Download using istatlab by_freq function (with specific frequency)
   data_list <- tryCatch({
     istatlab::download_istat_data_by_freq(
       dataset_id = dataset_id,
       start_time = start_time,
-      verbose = verbose
+      verbose = verbose,
+      freq = freq
     )
   }, error = function(e) {
     warning("Errore download ", dataset_id, ": ", e$message)
@@ -640,12 +666,27 @@ download_dataset_single_freq_safe <- function(dataset_id,
   })
 
   # Extract the requested frequency
-  if (!is.null(data_list) && freq %in% names(data_list)) {
-    result <- data_list[[freq]]
-    if (!is.null(result) && nrow(result) > 0) {
-      result[, FREQ := freq]
-      if (verbose) message("Download completato: ", nrow(result), " righe per ", freq)
-      return(result)
+  if (!is.null(data_list)) {
+    # Case 1: data is already split by frequency
+    if (freq %in% names(data_list)) {
+      result <- data_list[[freq]]
+      if (!is.null(result) && nrow(result) > 0) {
+        result[, FREQ := freq]
+        if (verbose) message("Download completato: ", nrow(result), " righe per ", freq)
+        return(result)
+      }
+    }
+    # Case 2: fallback when frequency check failed - data returned as "ALL"
+    # Filter by FREQ column in the data
+    if ("ALL" %in% names(data_list) && !is.null(data_list[["ALL"]])) {
+      all_data <- data_list[["ALL"]]
+      if (nrow(all_data) > 0 && "FREQ" %in% names(all_data)) {
+        result <- all_data[FREQ == freq]
+        if (nrow(result) > 0) {
+          if (verbose) message("Download completato (from ALL): ", nrow(result), " righe per ", freq)
+          return(result)
+        }
+      }
     }
   }
 
