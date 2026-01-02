@@ -43,17 +43,23 @@ expand_code <- FALSE
 # Data di inizio per il download (formato data completo per compatibilità con filter_by_time)
 start_time <- "2000-01-01"
 
-# 1a. Expand dataset codes to full IDs -----
-# This happens BEFORE pipeline execution to get static list for tar_map()
-dataset_ids <- expand_dataset_ids(dataset_codes, expand = expand_code)
+# 1a. Get dataset-frequency combinations (with caching) -----
+# Uses cached frequencies if dataset_codes hasn't changed
+dataset_freq_combinations <- get_cached_dataset_freq_combinations(
+  dataset_codes = dataset_codes,
+  expand = expand_code,
+  verbose = TRUE
+)
 
-# 1b. Expand to dataset-frequency combinations -----
-# Creates data.frame with dataset_id, freq columns for two-level branching
-dataset_freq_combinations <- expand_dataset_freq_combinations(dataset_ids, verbose = TRUE)
+# Skip annual (A) frequency - insufficient observations for forecasting
+dataset_freq_combinations <- dataset_freq_combinations[dataset_freq_combinations$freq != "A", ]
+message("After excluding annual: ", nrow(dataset_freq_combinations), " combinations")
+
+dataset_ids <- unique(dataset_freq_combinations$dataset_id)
 
 # 2. Set target options -----
 tar_option_set(
-  packages = c("istatlab", "data.table"),
+  packages = c("istatlab", "data.table", "forecast"),
   format = "rds",
   # Use "continue" error mode: failed targets stop with error but pipeline continues
   # Failed targets will rerun next time but don't block other datasets
@@ -113,15 +119,49 @@ list(
     ),
 
     # Apply labels to this dataset-frequency (depends on codelists_refresh)
+    # Uses istatlab::apply_labels() internally for correct dimension-to-codelist mapping
     tar_target(
       name = labeled,
       command = {
-        # Ensure codelists are available before labeling
-        ensure_codelists(dataset_id, verbose = TRUE)
         # Force dependency on codelists_refresh
         stopifnot(codelists_refresh)
-        apply_codelist_labels(data, codelists)
+        apply_codelist_labels(data)
       }
+    ),
+
+    # Filter labeled data to latest base year
+    # Filtra i dati etichettati all'ultimo anno base
+    tar_target(
+      name = filtered,
+      command = filter_latest_base_year(labeled, verbose = TRUE)
+    ),
+
+    # Generate forecasts for all series (2 years horizon by default)
+    # Genera previsioni per tutte le serie (orizzonte 2 anni per default)
+    # Uses parallel processing for large datasets (>500 series)
+    tar_target(
+      name = forecast,
+      command = generate_dataset_forecasts(
+        filtered,
+        horizon = NULL,  # auto-detect 2 years based on frequency
+        models = c("auto.arima", "ets", "naive"),
+        large_threshold = 500L,  # use parallel + fast models above this
+        verbose = TRUE
+      )
+    ),
+
+    # Combine historical + forecast data for dashboard use
+    # Combina dati storici + previsioni per uso dashboard
+    tar_target(
+      name = combined,
+      command = combine_historical_forecast(filtered, forecast)
+    ),
+
+    # Prepare COMBINED data for plotting with series statistics
+    # Prepara i dati COMBINATI per la visualizzazione con statistiche per serie
+    tar_target(
+      name = plot_ready,
+      command = prepare_plot_data(combined)
     )
   )
 )

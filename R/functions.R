@@ -166,6 +166,52 @@ expand_dataset_freq_combinations <- function(dataset_ids, verbose = TRUE) {
   return(result)
 }
 
+#' Get Dataset Frequency Combinations with Cache
+#'
+#' Returns cached dataset-frequency combinations if dataset_codes hasn't changed.
+#' Otherwise queries the API, caches the result, and returns it.
+#'
+#' @param dataset_codes Character vector of dataset codes (original user input)
+#' @param expand Logical; whether to expand root codes (default FALSE)
+#' @param cache_file Path to cache file (default "meta/dataset_freq_cache.rds")
+#' @param verbose Logical; print status messages (default TRUE)
+#'
+#' @return data.frame with columns: dataset_id, freq
+get_cached_dataset_freq_combinations <- function(dataset_codes,
+                                                  expand = FALSE,
+                                                  cache_file = "meta/dataset_freq_cache.rds",
+                                                  verbose = TRUE) {
+  cache_dir <- dirname(cache_file)
+  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
+
+  if (file.exists(cache_file)) {
+    cache <- tryCatch(readRDS(cache_file), error = function(e) NULL)
+    if (!is.null(cache)) {
+      if (identical(sort(cache$dataset_codes), sort(dataset_codes)) &&
+          identical(cache$expand_code, expand)) {
+        if (verbose) message("Using cached frequencies (", nrow(cache$combinations), " combinations)")
+        return(cache$combinations)
+      }
+      if (verbose) message("Dataset codes changed, refreshing cache...")
+    }
+  }
+
+  dataset_ids <- istatlab::expand_dataset_ids(dataset_codes, expand = expand)
+  combinations <- expand_dataset_freq_combinations(dataset_ids, verbose = verbose)
+
+  cache <- list(
+    dataset_codes = dataset_codes,
+    expand_code = expand,
+    dataset_ids = dataset_ids,
+    combinations = combinations,
+    created = Sys.time()
+  )
+  tryCatch(saveRDS(cache, cache_file), error = function(e)
+    warning("Could not save cache: ", e$message))
+
+  combinations
+}
+
 #' Merge Incremental Data with Cached Data
 #'
 #' Combines new incremental data with existing cached data, replacing
@@ -228,6 +274,103 @@ get_latest_edition <- function(dataset_id, verbose = TRUE) {
   if (verbose) message("Ultima edizione disponibile: ", latest)
 
   return(as.character(latest))
+}
+
+#' Filter Data to Latest Edition
+#'
+#' Filters a data.table to keep only rows with the latest (maximum) edition value.
+#' Edition column is detected case-insensitively.
+#'
+#' @param dt data.table with ISTAT data
+#' @param verbose Logical; print status messages (default TRUE)
+#'
+#' @return data.table filtered to latest edition, or original data if no edition column
+filter_latest_edition <- function(dt, verbose = TRUE) {
+  if (is.null(dt) || nrow(dt) == 0) return(dt)
+
+  # Find edition column (case-insensitive match)
+  edition_col <- grep("^edition$", names(dt), ignore.case = TRUE, value = TRUE)
+
+  if (length(edition_col) == 0) {
+    if (verbose) message("No edition column found, skipping edition filter")
+    return(dt)
+  }
+  edition_col <- edition_col[1]  # Use first match if multiple
+
+  # Get unique editions and find max
+  editions <- unique(dt[[edition_col]])
+  editions <- editions[!is.na(editions)]
+
+  if (length(editions) <= 1) {
+    if (verbose) message("Single or no edition found, no filtering needed")
+    return(dt)
+  }
+
+  latest_edition <- max(editions, na.rm = TRUE)
+
+  # Filter to latest edition
+  original_rows <- nrow(dt)
+  dt_filtered <- dt[get(edition_col) == latest_edition]
+
+  if (verbose) {
+    message("Edition filter: ", original_rows, " -> ", nrow(dt_filtered),
+            " rows (keeping edition ", latest_edition, ")")
+  }
+
+  return(dt_filtered)
+}
+
+#' Filter Data to Latest Base Year
+#'
+#' Parses "base YYYY" pattern from DATA_TYPE_label column and filters
+#' to keep only rows with the highest base year found.
+#'
+#' @param dt data.table with labeled ISTAT data (must have DATA_TYPE_label column)
+#' @param label_col Name of the label column to parse (default "DATA_TYPE_label")
+#' @param verbose Logical; print status messages (default TRUE)
+#'
+#' @return data.table filtered to latest base year, or original if no base year pattern found
+filter_latest_base_year <- function(dt, label_col = "DATA_TYPE_label", verbose = TRUE) {
+  if (is.null(dt) || nrow(dt) == 0) return(dt)
+
+  # Check if label column exists
+  if (!label_col %in% names(dt)) {
+    if (verbose) message("Column ", label_col, " not found, skipping base year filter")
+    return(dt)
+  }
+
+  # Extract base year from labels using regex
+  dt[, .base_year_temp := as.numeric(
+    gsub(".*base\\s*([0-9]{4}).*", "\\1", get(label_col), perl = TRUE)
+  )]
+
+  # Check for valid years
+
+  valid_years <- dt[!is.na(.base_year_temp) & .base_year_temp >= 1900, .base_year_temp]
+
+  if (length(valid_years) == 0) {
+    dt[, .base_year_temp := NULL]
+    if (verbose) message("No base year patterns found in ", label_col, ", skipping filter")
+    return(dt)
+  }
+
+  # Find max base year
+  max_base_year <- max(valid_years, na.rm = TRUE)
+  original_rows <- nrow(dt)
+
+  # Keep rows with max base year OR no base year pattern (NA)
+  dt_filtered <- dt[.base_year_temp == max_base_year | is.na(.base_year_temp)]
+
+  # Clean up temporary column
+  dt_filtered[, .base_year_temp := NULL]
+  dt[, .base_year_temp := NULL]
+
+  if (verbose) {
+    message("Base year filter: ", original_rows, " -> ", nrow(dt_filtered),
+            " rows (keeping base ", max_base_year, ")")
+  }
+
+  return(dt_filtered)
 }
 
 # 4. Download functions -----
@@ -673,7 +816,7 @@ download_dataset_single_freq_safe <- function(dataset_id,
       if (!is.null(result) && nrow(result) > 0) {
         result[, FREQ := freq]
         if (verbose) message("Download completato: ", nrow(result), " righe per ", freq)
-        return(result)
+        return(filter_latest_edition(result, verbose = verbose))
       }
     }
     # Case 2: fallback when frequency check failed - data returned as "ALL"
@@ -684,7 +827,7 @@ download_dataset_single_freq_safe <- function(dataset_id,
         result <- all_data[FREQ == freq]
         if (nrow(result) > 0) {
           if (verbose) message("Download completato (from ALL): ", nrow(result), " righe per ", freq)
-          return(result)
+          return(filter_latest_edition(result, verbose = verbose))
         }
       }
     }
@@ -705,143 +848,40 @@ download_dataset_single_freq_safe <- function(dataset_id,
 
 #' Apply codelist labels to data
 #'
-#' Applies labels from codelists to create columns with both codes and labels.
-#' Automatically ensures codelists are available for the dataset before labeling.
-#' If labeling fails due to missing codes, refreshes codelists and retries.
+#' Wrapper around istatlab::apply_labels() with error recovery.
+#' Uses the package function which correctly maps each dimension to its
+#' specific codelist, preventing label mixing.
 #'
 #' @param data data.table with raw ISTAT data
-#' @param codelists List of codelists from download_codelists()
+#' @param codelists Ignored (kept for backward compatibility, apply_labels loads from cache)
 #'
-#' @return data.table with original code columns AND new label columns
-apply_codelist_labels <- function(data, codelists) {
+#' @return data.table with label columns added
+apply_codelist_labels <- function(data, codelists = NULL) {
   if (is.null(data) || nrow(data) == 0) {
     warning("No data to label")
     return(data)
   }
 
-  # Get the dataset ID
   dataset_id <- data$id[1]
 
   # Ensure codelists are available for this dataset before labeling
   istatlab::ensure_codelists(dataset_id, verbose = FALSE)
 
-  # Try labeling with current codelists, refresh and retry on failure
+  # Try labeling with package function (uses dimension-specific codelist mapping)
   result <- tryCatch({
-    apply_labels_internal(data, codelists, dataset_id)
+    istatlab::apply_labels(data, verbose = FALSE)
   }, error = function(e) {
     message("Labeling failed: ", e$message)
     message("Refreshing codelists for ", dataset_id, " and retrying...")
 
     # Force refresh codelists for this dataset
-    fresh_codelists <- istatlab::download_codelists(dataset_id, force_update = TRUE)
+    istatlab::download_codelists(dataset_id, force_update = TRUE)
 
-    # Retry with fresh codelists
-    apply_labels_internal(data, fresh_codelists, dataset_id)
+    # Retry with fresh cache
+    istatlab::apply_labels(data, verbose = FALSE)
   })
 
   return(result)
-}
-
-#' Internal function to apply labels (used by apply_codelist_labels)
-#'
-#' @param data data.table with raw ISTAT data
-#' @param codelists List of codelists
-#' @param dataset_id Dataset ID string
-#'
-#' @return data.table with labels applied
-#' @keywords internal
-apply_labels_internal <- function(data, codelists, dataset_id) {
-  # Make a copy to avoid modifying original
-  dt <- data.table::copy(data)
-
-  codelist_key <- paste0("X", dataset_id)
-
-  # Fallback to root ID if exact match not found
-  if (!codelist_key %in% names(codelists)) {
-    root_id <- extract_root_dataset_id(dataset_id)
-    if (root_id != dataset_id) {
-      root_key <- paste0("X", root_id)
-      if (root_key %in% names(codelists)) {
-        codelist_key <- root_key
-        message("Using codelists from root dataset: ", root_id)
-      }
-    }
-  }
-
-  if (!codelist_key %in% names(codelists)) {
-    warning("No codelists found for dataset: ", dataset_id)
-    return(dt)
-  }
-
-  cl <- codelists[[codelist_key]]
-  if (!data.table::is.data.table(cl)) {
-    data.table::setDT(cl)
-  }
-
-  message("Applying labels to dataset: ", dataset_id)
-  message("  Codelist has ", nrow(cl), " entries")
-
-  # Get dimension columns (exclude standard SDMX columns)
-  exclude_cols <- c("ObsDimension", "ObsValue", "id", "CONF_STATUS", "OBS_STATUS")
-  dim_cols <- setdiff(names(dt), exclude_cols)
-
-  # For each dimension column, try to find matching labels in codelist
-  for (dim_col in dim_cols) {
-    # Look for codelist entries that match the values in this column
-    unique_codes <- unique(dt[[dim_col]])
-
-    # Find matching labels in the codelist - keep only first occurrence per code
-    matching_labels <- cl[id_description %in% unique_codes, .(id_description, it_description)]
-    matching_labels <- matching_labels[!duplicated(id_description)]
-
-    if (nrow(matching_labels) > 0) {
-      # Create the label column name
-      label_col <- paste0(dim_col, "_label")
-
-      # Create lookup table and merge (safer than vector indexing)
-      lookup_dt <- data.table::copy(matching_labels)
-      data.table::setnames(lookup_dt, c(dim_col, label_col))
-      # Ensure join key types match
-      lookup_dt[[dim_col]] <- as.character(lookup_dt[[dim_col]])
-      dt[[dim_col]] <- as.character(dt[[dim_col]])
-      dt <- merge(dt, lookup_dt, by = dim_col, all.x = TRUE)
-
-      # Fill NA labels with the code itself
-      dt[is.na(get(label_col)), (label_col) := get(dim_col)]
-
-      message("  Added labels for: ", dim_col, " (", nrow(matching_labels), " mappings)")
-    }
-  }
-
-  # Rename ObsDimension to tempo and convert to Date
-  if ("ObsDimension" %in% names(dt)) {
-    data.table::setnames(dt, "ObsDimension", "tempo")
-
-    # Try to convert to Date based on format
-    dt[, tempo := tryCatch({
-      if (grepl("-Q", tempo[1])) {
-        # Quarterly: 2020-Q1 -> 2020-01-01
-        as.Date(zoo::as.yearqtr(gsub("-Q", " Q", tempo)))
-      } else if (nchar(tempo[1]) == 7) {
-        # Monthly: 2020-01 -> 2020-01-01
-        as.Date(paste0(tempo, "-01"))
-      } else if (nchar(tempo[1]) == 4) {
-        # Annual: 2020 -> 2020-01-01
-        as.Date(paste0(tempo, "-01-01"))
-      } else {
-        tempo
-      }
-    }, error = function(e) tempo)]
-  }
-
-  # Rename ObsValue to valore and convert to numeric
-  if ("ObsValue" %in% names(dt)) {
-    data.table::setnames(dt, "ObsValue", "valore")
-    dt[, valore := as.numeric(valore)]
-  }
-
-  message("Labeling complete: ", ncol(dt), " columns, ", nrow(dt), " rows")
-  return(dt)
 }
 
 #' Summarize downloaded datasets
@@ -864,4 +904,397 @@ summarize_datasets <- function(data_list) {
   })
 
   data.table::rbindlist(summaries[!sapply(summaries, is.null)])
+}
+
+# 6. Plotting and forecasting functions -----
+
+#' Identify Dimension Columns in ISTAT Data
+#'
+#' Returns column names that represent dimensions (excluding temporal,
+#' value, and label columns).
+#'
+#' @param dt data.table with ISTAT data
+#'
+#' @return Character vector of dimension column names
+get_dimension_columns <- function(dt) {
+  all_cols <- names(dt)
+
+ # Exclude common non-dimension columns
+  exclude_patterns <- c(
+    "^tempo", "^valore$", "^ObsValue$", "^ObsDimension$",
+    "^CONF_STATUS$", "^OBS_STATUS$", "^FREQ$",
+    "_label$", "^id$", "^type$",
+    "^NOTE_"  # Exclude note columns
+  )
+
+  exclude_cols <- unlist(lapply(exclude_patterns, function(p) {
+    grep(p, all_cols, value = TRUE, ignore.case = TRUE)
+  }))
+
+  setdiff(all_cols, exclude_cols)
+}
+
+#' Compute Series Statistics
+#'
+#' Computes statistics for each unique time series in the data.
+#'
+#' @param dt data.table with labeled ISTAT data
+#' @param value_col Name of value column (default "valore")
+#' @param time_col Name of time column (default "tempo")
+#'
+#' @return data.table with per-series statistics
+compute_series_statistics <- function(dt, value_col = "valore", time_col = "tempo") {
+  if (!value_col %in% names(dt) || !time_col %in% names(dt)) {
+    return(data.table::data.table())
+  }
+
+  dim_cols <- get_dimension_columns(dt)
+
+  # If no dimension columns, treat as single series
+  if (length(dim_cols) == 0) {
+    return(data.table::data.table(
+      series_id = "all",
+      n_obs = nrow(dt),
+      start_date = min(dt[[time_col]], na.rm = TRUE),
+      end_date = max(dt[[time_col]], na.rm = TRUE),
+      mean = mean(dt[[value_col]], na.rm = TRUE),
+      sd = stats::sd(dt[[value_col]], na.rm = TRUE),
+      min = min(dt[[value_col]], na.rm = TRUE),
+      max = max(dt[[value_col]], na.rm = TRUE),
+      n_missing = sum(is.na(dt[[value_col]]))
+    ))
+  }
+
+  # Compute stats per unique series
+  stats_dt <- dt[, .(
+    n_obs = .N,
+    start_date = min(get(time_col), na.rm = TRUE),
+    end_date = max(get(time_col), na.rm = TRUE),
+    mean = mean(get(value_col), na.rm = TRUE),
+    sd = stats::sd(get(value_col), na.rm = TRUE),
+    min = min(get(value_col), na.rm = TRUE),
+    max = max(get(value_col), na.rm = TRUE),
+    n_missing = sum(is.na(get(value_col)))
+  ), by = dim_cols]
+
+  # Add series_id column
+  stats_dt[, series_id := do.call(paste, c(.SD, sep = "_")), .SDcols = dim_cols]
+
+  return(stats_dt)
+}
+
+#' Prepare Data for Plotting
+#'
+#' Prepares labeled ISTAT data for visualization. Computes per-series
+#' statistics and returns structured output for ggplot integration.
+#'
+#' @param labeled_data data.table with labeled ISTAT data
+#' @param value_col Name of value column (default "valore")
+#' @param time_col Name of time column (default "tempo")
+#'
+#' @return List with: data (plot-ready), stats (per-series), dimensions, n_series
+prepare_plot_data <- function(labeled_data,
+                               value_col = "valore",
+                               time_col = "tempo") {
+  if (is.null(labeled_data) || nrow(labeled_data) == 0) {
+    warning("No data to prepare for plotting")
+    return(list(
+      data = labeled_data,
+      stats = data.table::data.table(),
+      dimensions = character(),
+      n_series = 0L
+    ))
+  }
+
+  # Ensure time column is Date
+  dt <- data.table::copy(labeled_data)
+  if (!inherits(dt[[time_col]], "Date")) {
+    dt[, (time_col) := as.Date(get(time_col))]
+  }
+
+  # Identify dimension columns
+  dim_cols <- get_dimension_columns(dt)
+
+  # Compute series statistics
+  stats <- compute_series_statistics(dt, value_col, time_col)
+
+  # Count unique series
+  if (length(dim_cols) > 0) {
+    n_series <- nrow(unique(dt[, ..dim_cols]))
+  } else {
+    n_series <- 1L
+  }
+
+  result <- list(
+    data = dt,
+    stats = stats,
+    dimensions = dim_cols,
+    n_series = n_series
+  )
+
+  class(result) <- c("istat_plot_ready", class(result))
+  return(result)
+}
+
+#' Generate Forecasts for All Series in a Dataset
+#'
+#' Identifies unique time series in the dataset and generates forecasts
+#' for each using istatlab::forecast_series().
+#'
+#' @param labeled_data data.table with labeled ISTAT data
+#' @param horizon Forecast horizon (NULL = auto-detect 2 years based on frequency)
+#' @param models Character vector of models to fit
+#' @param value_col Name of value column (default "valore")
+#' @param time_col Name of time column (default "tempo")
+#' @param freq_col Name of frequency column (default "FREQ")
+#' @param min_obs Minimum observations required for forecasting (default 12)
+#' @param verbose Logical; print status messages (default TRUE)
+#'
+#' @return List with: forecasts (named list), n_series, n_success, dimension_cols
+generate_dataset_forecasts <- function(labeled_data,
+                                        horizon = NULL,
+                                        models = c("auto.arima", "ets", "naive"),
+                                        value_col = "valore",
+                                        time_col = "tempo",
+                                        freq_col = "FREQ",
+                                        min_obs = 12L,
+                                        n_cores = NULL,
+                                        large_threshold = 500L,
+                                        verbose = TRUE) {
+  if (is.null(labeled_data) || nrow(labeled_data) == 0) {
+    warning("No data for forecasting")
+    return(list(
+      forecasts = list(),
+      n_series = 0L,
+      n_success = 0L,
+      dimension_cols = character(),
+      skipped = FALSE
+    ))
+  }
+
+  # Get dimension columns (excluding _label columns for grouping)
+  dim_cols <- get_dimension_columns(labeled_data)
+  dim_cols_no_label <- dim_cols[!grepl("_label$", dim_cols)]
+
+  if (length(dim_cols_no_label) == 0) {
+    # Single series case
+    series_list <- list(single_series = labeled_data)
+    series_dims_list <- list(single_series = NULL)
+  } else {
+    # Split data by dimension combinations
+    labeled_data[, .series_key := do.call(paste, c(.SD, sep = "_")), .SDcols = dim_cols_no_label]
+
+    if (verbose) {
+      n_unique <- length(unique(labeled_data$.series_key))
+      message("Found ", n_unique, " unique series to forecast")
+      message("Splitting data by series...")
+    }
+
+    # Use data.table split (fast)
+    series_list <- split(labeled_data, by = ".series_key", keep.by = FALSE)
+
+    # Extract dimension values for each series
+    series_dims_list <- lapply(series_list, function(dt) {
+      dt[1, ..dim_cols_no_label]
+    })
+
+    # Clean up
+    labeled_data[, .series_key := NULL]
+  }
+
+  n_series <- length(series_list)
+  series_names <- names(series_list)
+
+  # For large datasets, use simpler/faster models
+  if (n_series > large_threshold) {
+    models <- c("ets", "naive")
+    if (verbose) message("Large dataset: using fast models (ets, naive)")
+  }
+
+  # Determine parallelization
+  use_parallel <- n_series > large_threshold
+  if (use_parallel) {
+    if (is.null(n_cores)) n_cores <- max(1L, parallel::detectCores() - 1L)
+    if (verbose) message("Using parallel processing with ", n_cores, " cores")
+  }
+
+  # Function to forecast a single series (takes data directly)
+  forecast_one_series <- function(series_data, series_dims) {
+    if (nrow(series_data) < min_obs) return(NULL)
+
+    tryCatch({
+      fc <- istatlab::forecast_series(
+        series_data,
+        time_col = time_col,
+        value_col = value_col,
+        freq_col = freq_col,
+        horizon = horizon,
+        models = models,
+        verbose = FALSE
+      )
+      fc$series_dims <- series_dims
+      fc
+    }, error = function(e) NULL)
+  }
+
+  # Run forecasts
+  if (use_parallel) {
+    if (verbose) message("Starting parallel forecasting...")
+    forecasts <- parallel::mcmapply(
+      forecast_one_series,
+      series_list,
+      series_dims_list,
+      SIMPLIFY = FALSE,
+      mc.cores = n_cores
+    )
+  } else {
+    forecasts <- mapply(
+      function(dt, dims, i) {
+        if (verbose && (i %% 10 == 0 || i == 1)) {
+          message("  Forecasting series ", i, "/", n_series)
+        }
+        forecast_one_series(dt, dims)
+      },
+      series_list,
+      series_dims_list,
+      seq_along(series_list),
+      SIMPLIFY = FALSE
+    )
+  }
+
+  names(forecasts) <- series_names
+
+  # Remove NULLs
+  forecasts <- forecasts[!sapply(forecasts, is.null)]
+
+  n_success <- length(forecasts)
+  if (verbose) message("Successfully forecasted ", n_success, "/", n_series, " series")
+
+  list(
+    forecasts = forecasts,
+    n_series = n_series,
+    n_success = n_success,
+    dimension_cols = dim_cols_no_label
+  )
+}
+
+#' Combine Historical and Forecast Data
+#'
+#' Merges labeled historical data with forecasts, adding a type column
+#' to distinguish between observed and forecasted values.
+#'
+#' @param labeled_data data.table with labeled historical data
+#' @param forecast_results Output from generate_dataset_forecasts()
+#' @param value_col Name of value column (default "valore")
+#' @param time_col Name of time column (default "tempo")
+#'
+#' @return data.table with combined historical + forecast data and type column
+combine_historical_forecast <- function(labeled_data,
+                                         forecast_results,
+                                         value_col = "valore",
+                                         time_col = "tempo") {
+  if (is.null(labeled_data) || nrow(labeled_data) == 0) {
+    warning("No historical data to combine")
+    return(labeled_data)
+  }
+
+  # Add type column to historical data
+  historical <- data.table::copy(labeled_data)
+  historical[, type := "historical"]
+
+  # Check if we have forecasts
+  if (is.null(forecast_results) ||
+      length(forecast_results$forecasts) == 0) {
+    warning("No forecasts to combine")
+    return(historical)
+  }
+
+  dim_cols <- forecast_results$dimension_cols
+
+  # Extract forecast data from each series
+  forecast_list <- lapply(names(forecast_results$forecasts), function(fc_name) {
+    fc <- forecast_results$forecasts[[fc_name]]
+
+    if (is.null(fc) || is.null(fc$best_model)) return(NULL)
+
+    # Get best model forecast data.table
+    fc_dt <- data.table::copy(fc$best_model$forecast)
+
+    # Rename columns to match historical
+    if ("tempo" %in% names(fc_dt) && time_col != "tempo") {
+      data.table::setnames(fc_dt, "tempo", time_col)
+    }
+
+    # Value column from forecast is "valore"
+    if (value_col != "valore" && "valore" %in% names(fc_dt)) {
+      data.table::setnames(fc_dt, "valore", value_col)
+    }
+
+    # Add type column
+    fc_dt[, type := "forecast"]
+
+    # Add dimension values if available
+    if (!is.null(fc$series_dims) && length(dim_cols) > 0) {
+      for (col in names(fc$series_dims)) {
+        fc_dt[, (col) := fc$series_dims[[col]]]
+      }
+    }
+
+    fc_dt
+  })
+
+  # Remove NULLs and combine
+  forecast_list <- forecast_list[!sapply(forecast_list, is.null)]
+
+  if (length(forecast_list) == 0) {
+    warning("No valid forecast data to combine")
+    return(historical)
+  }
+
+  all_forecasts <- data.table::rbindlist(forecast_list, fill = TRUE)
+
+  # Find label columns in historical data (columns ending with _label)
+  label_cols <- grep("_label$", names(historical), value = TRUE)
+
+  # If we have label columns and dimension columns, join labels to forecasts
+  if (length(label_cols) > 0 && length(dim_cols) > 0) {
+    # Get unique dimension-to-label mappings from historical data
+    cols_for_lookup <- c(dim_cols, label_cols)
+    cols_for_lookup <- intersect(cols_for_lookup, names(historical))
+
+    if (length(cols_for_lookup) > length(dim_cols)) {
+      # Create lookup table with unique dimension combinations
+      dim_cols_present <- intersect(dim_cols, names(historical))
+      if (length(dim_cols_present) > 0) {
+        label_lookup <- unique(historical[, ..cols_for_lookup])
+
+        # Join labels to forecasts
+        fc_dim_cols <- intersect(dim_cols_present, names(all_forecasts))
+        if (length(fc_dim_cols) > 0) {
+          all_forecasts <- merge(
+            all_forecasts,
+            label_lookup,
+            by = fc_dim_cols,
+            all.x = TRUE
+          )
+        }
+      }
+    }
+  }
+
+  # Combine historical + forecasts
+  combined <- data.table::rbindlist(
+    list(historical, all_forecasts),
+    use.names = TRUE,
+    fill = TRUE
+  )
+
+  # Sort by dimensions and time
+  sort_cols <- c(dim_cols, time_col)
+  sort_cols <- sort_cols[sort_cols %in% names(combined)]
+  if (length(sort_cols) > 0) {
+    data.table::setorderv(combined, sort_cols)
+  }
+
+  combined
 }
