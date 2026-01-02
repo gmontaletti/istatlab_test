@@ -1105,18 +1105,13 @@ generate_dataset_forecasts <- function(labeled_data,
   n_series <- length(series_list)
   series_names <- names(series_list)
 
-  # For large datasets, use simpler/faster models
-  if (n_series > large_threshold) {
-    models <- c("ets", "naive")
-    if (verbose) message("Large dataset: using fast models (ets, naive)")
-  }
+  # Always use all models (auto.arima, ets, naive)
+  if (verbose) message("Using models: ", paste(models, collapse = ", "))
 
-  # Determine parallelization
-  use_parallel <- n_series > large_threshold
-  if (use_parallel) {
-    if (is.null(n_cores)) n_cores <- max(1L, parallel::detectCores() - 1L)
-    if (verbose) message("Using parallel processing with ", n_cores, " cores")
-  }
+  # Always use parallel processing
+  use_parallel <- TRUE
+  if (is.null(n_cores)) n_cores <- max(1L, parallel::detectCores() - 1L)
+  if (verbose) message("Using parallel processing with ", n_cores, " cores")
 
   # Function to forecast a single series (takes data directly)
   forecast_one_series <- function(series_data, series_dims) {
