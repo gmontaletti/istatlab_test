@@ -14,26 +14,25 @@ tar_source()
 # User-configurable list of dataset codes (root codes that will be expanded)
 # Modify this vector to change which datasets are downloaded
 dataset_codes <- c(
-    "534_50" # Posizioni lavorative - Imprese con almeno 500 dipendenti
-   , "534_49" # Ore lavorate - Imprese con almeno 500 dipendenti
-  , "155_318" # retribuzioni contrattuali
-  , "534_1037" # ore lavorat e imprese con dipe
-  , "534_1038" # posti vacanti
-  , "150_908" # "Forze di lavoro",
-  , "150_915" # = "Tasso di occupazione",
-  , "150_916" # = "Tasso di attività",
-  , "150_938" # = "Occupati (migliaia)",
-  , "151_914" # = "Tasso di disoccupazione",
-  , "151_929" # = "Disoccupati",
-  , "152_913" #= "Tasso di inattività",
-  , "152_928" #= "Inattivi",
-  , "154_373" # imprese con dipendenti 
-  , "532_930" #= "Popolazione per condizione professionale"
-, "149_319" # temsione contrattuale
-, "149_327" # Orario contrattuale, ferie e altre riduzioni orarie - dipendenti a tempo pieno
-, "533_957" # RACLI  Retribuzioni orarie  dei dipendenti del settore privato
- 
- )
+  "534_50", # Posizioni lavorative - Imprese con almeno 500 dipendenti
+  "534_49", # Ore lavorate - Imprese con almeno 500 dipendenti
+  "155_318", # retribuzioni contrattuali
+  "534_1037", # ore lavorat e imprese con dipe
+  "534_1038", # posti vacanti
+  "150_908", # "Forze di lavoro",
+  "150_915", # = "Tasso di occupazione",
+  "150_916", # = "Tasso di attività",
+  "150_938", # = "Occupati (migliaia)",
+  "151_914", # = "Tasso di disoccupazione",
+  "151_929", # = "Disoccupati",
+  "152_913", #= "Tasso di inattività",
+  "152_928", #= "Inattivi",
+  "154_373", # imprese con dipendenti
+  "532_930", #= "Popolazione per condizione professionale"
+  "149_319", # temsione contrattuale
+  "149_327", # Orario contrattuale, ferie e altre riduzioni orarie - dipendenti a tempo pieno
+  "533_957" # RACLI  Retribuzioni orarie  dei dipendenti del settore privato
+)
 
 # Set to TRUE to automatically expand root codes to all matching datasets
 # Set to FALSE to download only the exact codes specified (solo codici radice)
@@ -52,8 +51,14 @@ dataset_freq_combinations <- get_cached_dataset_freq_combinations(
 )
 
 # Skip annual (A) frequency - insufficient observations for forecasting
-dataset_freq_combinations <- dataset_freq_combinations[dataset_freq_combinations$freq != "A", ]
-message("After excluding annual: ", nrow(dataset_freq_combinations), " combinations")
+dataset_freq_combinations <- dataset_freq_combinations[
+  dataset_freq_combinations$freq != "A",
+]
+message(
+  "After excluding annual: ",
+  nrow(dataset_freq_combinations),
+  " combinations"
+)
 
 dataset_ids <- unique(dataset_freq_combinations$dataset_id)
 
@@ -94,7 +99,13 @@ list(
     name = codelists_refresh,
     command = {
       result <- refresh_expired_codelists(verbose = TRUE)
-      message("Codelists refresh: ", result$refreshed, "/", result$total, " updated")
+      message(
+        "Codelists refresh: ",
+        result$refreshed,
+        "/",
+        result$total,
+        " updated"
+      )
       TRUE
     }
   ),
@@ -143,9 +154,9 @@ list(
       name = forecast,
       command = generate_dataset_forecasts(
         filtered,
-        horizon = NULL,  # auto-detect 2 years based on frequency
+        horizon = NULL, # auto-detect 2 years based on frequency
         models = c("auto.arima", "ets", "naive"),
-        large_threshold = 500L,  # use parallel + fast models above this
+        large_threshold = 500L, # use parallel + fast models above this
         verbose = TRUE
       )
     ),

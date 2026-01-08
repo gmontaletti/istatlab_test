@@ -53,13 +53,19 @@ get_targets_timestamps <- function(targets_dir = "_targets/objects") {
 #'
 #' @return TRUE if API becomes accessible, stops with error if max time exceeded
 #' @export
-wait_for_api_connectivity <- function(max_hours = 12,
-                                      check_interval_minutes = 15,
-                                      verbose = TRUE) {
+wait_for_api_connectivity <- function(
+  max_hours = 12,
+  check_interval_minutes = 15,
+  verbose = TRUE
+) {
   max_attempts <- ceiling((max_hours * 60) / check_interval_minutes)
 
   for (attempt in seq_len(max_attempts)) {
-    result <- istatlab::test_endpoint_connectivity("data", timeout = 30, verbose = FALSE)
+    result <- istatlab::test_endpoint_connectivity(
+      "data",
+      timeout = 30,
+      verbose = FALSE
+    )
 
     if (result$accessible[1]) {
       if (verbose) {
@@ -69,8 +75,15 @@ wait_for_api_connectivity <- function(max_hours = 12,
     }
 
     if (verbose) {
-      message("API non raggiungibile. Tentativo ", attempt, "/", max_attempts,
-              ". Prossimo tentativo tra ", check_interval_minutes, " minuti.")
+      message(
+        "API non raggiungibile. Tentativo ",
+        attempt,
+        "/",
+        max_attempts,
+        ". Prossimo tentativo tra ",
+        check_interval_minutes,
+        " minuti."
+      )
     }
 
     if (attempt < max_attempts) {
@@ -92,7 +105,11 @@ wait_for_api_connectivity <- function(max_hours = 12,
 #' @param verbose Logical; print delay message (default TRUE)
 #'
 #' @return Invisible numeric with actual delay applied
-random_rate_limit_delay <- function(min_seconds = 6, max_seconds = 300, verbose = TRUE) {
+random_rate_limit_delay <- function(
+  min_seconds = 6,
+  max_seconds = 300,
+  verbose = TRUE
+) {
   delay <- runif(1, min = min_seconds, max = max_seconds)
   if (verbose) {
     message("Rate limit delay: ", round(delay, 1), " seconds...")
@@ -127,23 +144,34 @@ extract_root_dataset_id <- function(dataset_id) {
 #'
 #' @return data.frame with columns: dataset_id, freq
 expand_dataset_freq_combinations <- function(dataset_ids, verbose = TRUE) {
-  if (verbose) message("Expanding dataset-frequency combinations...")
+  if (verbose) {
+    message("Expanding dataset-frequency combinations...")
+  }
 
   combinations <- lapply(dataset_ids, function(id) {
-    freqs <- tryCatch({
-      istatlab::get_available_frequencies(id)
-    }, error = function(e) {
-      if (verbose) warning("Could not get frequencies for ", id, ": ", e$message)
-      NULL
-    })
+    freqs <- tryCatch(
+      {
+        istatlab::get_available_frequencies(id)
+      },
+      error = function(e) {
+        if (verbose) {
+          warning("Could not get frequencies for ", id, ": ", e$message)
+        }
+        NULL
+      }
+    )
 
     # Skip datasets with no available frequencies
     if (is.null(freqs) || length(freqs) == 0) {
-      if (verbose) message("  ", id, ": no frequencies found, skipping")
+      if (verbose) {
+        message("  ", id, ": no frequencies found, skipping")
+      }
       return(NULL)
     }
 
-    if (verbose) message("  ", id, ": ", paste(freqs, collapse = ", "))
+    if (verbose) {
+      message("  ", id, ": ", paste(freqs, collapse = ", "))
+    }
 
     data.frame(
       dataset_id = id,
@@ -159,8 +187,13 @@ expand_dataset_freq_combinations <- function(dataset_ids, verbose = TRUE) {
   }
 
   if (verbose) {
-    message("Total combinations: ", nrow(result),
-            " (", length(unique(result$dataset_id)), " datasets)")
+    message(
+      "Total combinations: ",
+      nrow(result),
+      " (",
+      length(unique(result$dataset_id)),
+      " datasets)"
+    )
   }
 
   return(result)
@@ -177,19 +210,31 @@ expand_dataset_freq_combinations <- function(dataset_ids, verbose = TRUE) {
 #' @param verbose Logical; print status messages (default TRUE)
 #'
 #' @return data.frame with columns: dataset_id, freq
-get_cached_dataset_freq_combinations <- function(dataset_codes,
-                                                  expand = FALSE,
-                                                  cache_file = "meta/dataset_freq_cache.rds",
-                                                  verbose = TRUE) {
+get_cached_dataset_freq_combinations <- function(
+  dataset_codes,
+  expand = FALSE,
+  cache_file = "meta/dataset_freq_cache.rds",
+  verbose = TRUE
+) {
   cache_dir <- dirname(cache_file)
-  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
+  if (!dir.exists(cache_dir)) {
+    dir.create(cache_dir, recursive = TRUE)
+  }
 
   if (file.exists(cache_file)) {
     cache <- tryCatch(readRDS(cache_file), error = function(e) NULL)
     if (!is.null(cache)) {
-      if (identical(sort(cache$dataset_codes), sort(dataset_codes)) &&
-          identical(cache$expand_code, expand)) {
-        if (verbose) message("Using cached frequencies (", nrow(cache$combinations), " combinations)")
+      if (
+        identical(sort(cache$dataset_codes), sort(dataset_codes)) &&
+          identical(cache$expand_code, expand)
+      ) {
+        if (verbose) {
+          message(
+            "Using cached frequencies (",
+            nrow(cache$combinations),
+            " combinations)"
+          )
+        }
         return(cache$combinations)
       }
       if (verbose) message("Dataset codes changed, refreshing cache...")
@@ -197,7 +242,10 @@ get_cached_dataset_freq_combinations <- function(dataset_codes,
   }
 
   dataset_ids <- istatlab::expand_dataset_ids(dataset_codes, expand = expand)
-  combinations <- expand_dataset_freq_combinations(dataset_ids, verbose = verbose)
+  combinations <- expand_dataset_freq_combinations(
+    dataset_ids,
+    verbose = verbose
+  )
 
   cache <- list(
     dataset_codes = dataset_codes,
@@ -206,8 +254,9 @@ get_cached_dataset_freq_combinations <- function(dataset_codes,
     combinations = combinations,
     created = Sys.time()
   )
-  tryCatch(saveRDS(cache, cache_file), error = function(e)
-    warning("Could not save cache: ", e$message))
+  tryCatch(saveRDS(cache, cache_file), error = function(e) {
+    warning("Could not save cache: ", e$message)
+  })
 
   combinations
 }
@@ -222,8 +271,12 @@ get_cached_dataset_freq_combinations <- function(dataset_codes,
 #'
 #' @return data.table with merged data
 merge_incremental_data <- function(old_data, new_data) {
-  if (is.null(new_data) || nrow(new_data) == 0) return(old_data)
-  if (is.null(old_data) || nrow(old_data) == 0) return(new_data)
+  if (is.null(new_data) || nrow(new_data) == 0) {
+    return(old_data)
+  }
+  if (is.null(old_data) || nrow(old_data) == 0) {
+    return(new_data)
+  }
 
   # Key columns = all dimension columns (exclude value and status columns)
   exclude_cols <- c("ObsValue", "CONF_STATUS", "OBS_STATUS")
@@ -234,7 +287,11 @@ merge_incremental_data <- function(old_data, new_data) {
   old_unique <- old_data[!new_data, on = key_cols]
 
   # Combine old unique + new data
-  result <- data.table::rbindlist(list(old_unique, new_data), use.names = TRUE, fill = TRUE)
+  result <- data.table::rbindlist(
+    list(old_unique, new_data),
+    use.names = TRUE,
+    fill = TRUE
+  )
   return(result)
 }
 
@@ -249,29 +306,47 @@ merge_incremental_data <- function(old_data, new_data) {
 #' @return Character string with latest edition value, or NULL if not found
 get_latest_edition <- function(dataset_id, verbose = TRUE) {
   # Query available constraints for the dataset
-  constraints <- tryCatch({
-    istatlab::get_available_constraints(dataset_id)
-  }, error = function(e) {
-    if (verbose) warning("Errore query edizioni: ", e$message)
-    NULL
-  })
+  constraints <- tryCatch(
+    {
+      istatlab::get_available_constraints(dataset_id)
+    },
+    error = function(e) {
+      if (verbose) {
+        warning("Errore query edizioni: ", e$message)
+      }
+      NULL
+    }
+  )
 
-  if (is.null(constraints)) return(NULL)
+  if (is.null(constraints)) {
+    return(NULL)
+  }
 
   # Find edition dimension (case-insensitive)
-  edition_col <- grep("^edition$", names(constraints), ignore.case = TRUE, value = TRUE)
+  edition_col <- grep(
+    "^edition$",
+    names(constraints),
+    ignore.case = TRUE,
+    value = TRUE
+  )
 
-  if (length(edition_col) == 0) return(NULL)
+  if (length(edition_col) == 0) {
+    return(NULL)
+  }
 
   # Get available edition values and return the max
   editions <- unique(constraints[[edition_col[1]]])
   editions <- editions[!is.na(editions)]
 
-  if (length(editions) == 0) return(NULL)
+  if (length(editions) == 0) {
+    return(NULL)
+  }
 
   # Return latest (max) edition - works for numeric or date-like strings
   latest <- max(editions, na.rm = TRUE)
-  if (verbose) message("Ultima edizione disponibile: ", latest)
+  if (verbose) {
+    message("Ultima edizione disponibile: ", latest)
+  }
 
   return(as.character(latest))
 }
@@ -286,23 +361,29 @@ get_latest_edition <- function(dataset_id, verbose = TRUE) {
 #'
 #' @return data.table filtered to latest edition, or original data if no edition column
 filter_latest_edition <- function(dt, verbose = TRUE) {
-  if (is.null(dt) || nrow(dt) == 0) return(dt)
+  if (is.null(dt) || nrow(dt) == 0) {
+    return(dt)
+  }
 
   # Find edition column (case-insensitive match)
   edition_col <- grep("^edition$", names(dt), ignore.case = TRUE, value = TRUE)
 
   if (length(edition_col) == 0) {
-    if (verbose) message("No edition column found, skipping edition filter")
+    if (verbose) {
+      message("No edition column found, skipping edition filter")
+    }
     return(dt)
   }
-  edition_col <- edition_col[1]  # Use first match if multiple
+  edition_col <- edition_col[1] # Use first match if multiple
 
   # Get unique editions and find max
   editions <- unique(dt[[edition_col]])
   editions <- editions[!is.na(editions)]
 
   if (length(editions) <= 1) {
-    if (verbose) message("Single or no edition found, no filtering needed")
+    if (verbose) {
+      message("Single or no edition found, no filtering needed")
+    }
     return(dt)
   }
 
@@ -313,8 +394,15 @@ filter_latest_edition <- function(dt, verbose = TRUE) {
   dt_filtered <- dt[get(edition_col) == latest_edition]
 
   if (verbose) {
-    message("Edition filter: ", original_rows, " -> ", nrow(dt_filtered),
-            " rows (keeping edition ", latest_edition, ")")
+    message(
+      "Edition filter: ",
+      original_rows,
+      " -> ",
+      nrow(dt_filtered),
+      " rows (keeping edition ",
+      latest_edition,
+      ")"
+    )
   }
 
   return(dt_filtered)
@@ -330,27 +418,42 @@ filter_latest_edition <- function(dt, verbose = TRUE) {
 #' @param verbose Logical; print status messages (default TRUE)
 #'
 #' @return data.table filtered to latest base year, or original if no base year pattern found
-filter_latest_base_year <- function(dt, label_col = "DATA_TYPE_label", verbose = TRUE) {
-  if (is.null(dt) || nrow(dt) == 0) return(dt)
+filter_latest_base_year <- function(
+  dt,
+  label_col = "DATA_TYPE_label",
+  verbose = TRUE
+) {
+  if (is.null(dt) || nrow(dt) == 0) {
+    return(dt)
+  }
 
   # Check if label column exists
   if (!label_col %in% names(dt)) {
-    if (verbose) message("Column ", label_col, " not found, skipping base year filter")
+    if (verbose) {
+      message("Column ", label_col, " not found, skipping base year filter")
+    }
     return(dt)
   }
 
   # Extract base year from labels using regex
-  dt[, .base_year_temp := as.numeric(
-    gsub(".*base\\s*([0-9]{4}).*", "\\1", get(label_col), perl = TRUE)
-  )]
+  dt[,
+    .base_year_temp := as.numeric(
+      gsub(".*base\\s*([0-9]{4}).*", "\\1", get(label_col), perl = TRUE)
+    )
+  ]
 
   # Check for valid years
 
-  valid_years <- dt[!is.na(.base_year_temp) & .base_year_temp >= 1900, .base_year_temp]
+  valid_years <- dt[
+    !is.na(.base_year_temp) & .base_year_temp >= 1900,
+    .base_year_temp
+  ]
 
   if (length(valid_years) == 0) {
     dt[, .base_year_temp := NULL]
-    if (verbose) message("No base year patterns found in ", label_col, ", skipping filter")
+    if (verbose) {
+      message("No base year patterns found in ", label_col, ", skipping filter")
+    }
     return(dt)
   }
 
@@ -366,8 +469,15 @@ filter_latest_base_year <- function(dt, label_col = "DATA_TYPE_label", verbose =
   dt[, .base_year_temp := NULL]
 
   if (verbose) {
-    message("Base year filter: ", original_rows, " -> ", nrow(dt_filtered),
-            " rows (keeping base ", max_base_year, ")")
+    message(
+      "Base year filter: ",
+      original_rows,
+      " -> ",
+      nrow(dt_filtered),
+      " rows (keeping base ",
+      max_base_year,
+      ")"
+    )
   }
 
   return(dt_filtered)
@@ -385,12 +495,20 @@ filter_latest_base_year <- function(dt, label_col = "DATA_TYPE_label", verbose =
 #'
 #' @return Logical TRUE if data is valid, FALSE otherwise
 is_valid_istat_data <- function(data, min_rows = 1L) {
-  if (is.null(data)) return(FALSE)
-  if (!data.table::is.data.table(data)) return(FALSE)
-  if (nrow(data) < min_rows) return(FALSE)
+  if (is.null(data)) {
+    return(FALSE)
+  }
+  if (!data.table::is.data.table(data)) {
+    return(FALSE)
+  }
+  if (nrow(data) < min_rows) {
+    return(FALSE)
+  }
   # Check for required SDMX columns
   required <- c("ObsDimension", "ObsValue")
-  if (!all(required %in% names(data))) return(FALSE)
+  if (!all(required %in% names(data))) {
+    return(FALSE)
+  }
   return(TRUE)
 }
 
@@ -407,8 +525,12 @@ is_valid_istat_data <- function(data, min_rows = 1L) {
 #'
 #' @return data.table with downloaded data, cached data on API failure,
 #'   or stops with error if no valid data available
-download_dataset_safe <- function(dataset_id, start_time, api_status,
-                                  targets_dir = "_targets/objects") {
+download_dataset_safe <- function(
+  dataset_id,
+  start_time,
+  api_status,
+  targets_dir = "_targets/objects"
+) {
   # Construct the target object filename
   target_name <- paste0("data_", dataset_id)
   cached_file <- file.path(targets_dir, target_name)
@@ -428,8 +550,13 @@ download_dataset_safe <- function(dataset_id, start_time, api_status,
   if (!api_status) {
     cached_data <- read_cached()
     if (!is.null(cached_data)) {
-      message("API not accessible. Using cached data for: ", dataset_id,
-              " (", nrow(cached_data), " rows)")
+      message(
+        "API not accessible. Using cached data for: ",
+        dataset_id,
+        " (",
+        nrow(cached_data),
+        " rows)"
+      )
       return(cached_data)
     }
     stop("API not accessible and no valid cached data for: ", dataset_id)
@@ -447,17 +574,40 @@ download_dataset_safe <- function(dataset_id, start_time, api_status,
 
   # Check result using structured istat_result object
   if (result$success && is_valid_istat_data(result$data)) {
-    md5_info <- if (!is.na(result$md5)) paste0(" (MD5: ", substr(result$md5, 1, 8), "...)") else ""
-    message("Successfully downloaded ", nrow(result$data), " rows for dataset: ", dataset_id, md5_info)
+    md5_info <- if (!is.na(result$md5)) {
+      paste0(" (MD5: ", substr(result$md5, 1, 8), "...)")
+    } else {
+      ""
+    }
+    message(
+      "Successfully downloaded ",
+      nrow(result$data),
+      " rows for dataset: ",
+      dataset_id,
+      md5_info
+    )
     return(result$data)
   }
 
   # Download failed - distinguish between timeout and other errors
   if (result$is_timeout) {
-    warning("Timeout downloading ", dataset_id, " (exit code: ", result$exit_code, ")")
+    warning(
+      "Timeout downloading ",
+      dataset_id,
+      " (exit code: ",
+      result$exit_code,
+      ")"
+    )
   } else if (!result$success) {
-    warning("Download error for ", dataset_id, ": ", result$message,
-            " (exit code: ", result$exit_code, ")")
+    warning(
+      "Download error for ",
+      dataset_id,
+      ": ",
+      result$message,
+      " (exit code: ",
+      result$exit_code,
+      ")"
+    )
   } else {
     warning("Download returned invalid/empty data for: ", dataset_id)
   }
@@ -465,8 +615,13 @@ download_dataset_safe <- function(dataset_id, start_time, api_status,
   # Try cache fallback
   cached_data <- read_cached()
   if (!is.null(cached_data)) {
-    message("Download failed. Preserving cached data for: ", dataset_id,
-            " (", nrow(cached_data), " rows)")
+    message(
+      "Download failed. Preserving cached data for: ",
+      dataset_id,
+      " (",
+      nrow(cached_data),
+      " rows)"
+    )
     return(cached_data)
   }
 
@@ -490,17 +645,23 @@ download_dataset_safe <- function(dataset_id, start_time, api_status,
 #' @param verbose Logical; print status messages (default TRUE)
 #'
 #' @return data.table with all frequencies combined, or cached data on failure
-download_dataset_by_freq_safe <- function(dataset_id,
-                                          start_time,
-                                          check_update = TRUE,
-                                          targets_dir = "_targets/objects",
-                                          apply_delay = TRUE,
-                                          delay_min = 6,
-                                          delay_max = 300,
-                                          verbose = TRUE) {
+download_dataset_by_freq_safe <- function(
+  dataset_id,
+  start_time,
+  check_update = TRUE,
+  targets_dir = "_targets/objects",
+  apply_delay = TRUE,
+  delay_min = 6,
+  delay_max = 300,
+  verbose = TRUE
+) {
   # Apply random delay for rate limiting
   if (apply_delay) {
-    random_rate_limit_delay(min_seconds = delay_min, max_seconds = delay_max, verbose = verbose)
+    random_rate_limit_delay(
+      min_seconds = delay_min,
+      max_seconds = delay_max,
+      verbose = verbose
+    )
   }
   # Construct the target object filename
   target_name <- paste0("data_", dataset_id)
@@ -522,33 +683,47 @@ download_dataset_by_freq_safe <- function(dataset_id,
     cached_data <- read_cached()
     if (!is.null(cached_data)) {
       # Get LAST_UPDATE from ISTAT
-      last_update <- tryCatch({
-        istatlab::get_dataset_last_update(dataset_id)
-      }, error = function(e) NULL)
+      last_update <- tryCatch(
+        {
+          istatlab::get_dataset_last_update(dataset_id)
+        },
+        error = function(e) NULL
+      )
 
       # Get cached file modification time
       if (!is.null(last_update) && file.exists(cached_file)) {
         cache_mtime <- file.info(cached_file)$mtime
 
         if (last_update <= cache_mtime) {
-          if (verbose) message("Dataset ", dataset_id, " non aggiornato. Skip.")
+          if (verbose) {
+            message("Dataset ", dataset_id, " non aggiornato. Skip.")
+          }
           return(cached_data)
         }
 
         # Update detected - check for edition column
-        has_edition <- any(grepl("^edition$", names(cached_data), ignore.case = TRUE))
+        has_edition <- any(grepl(
+          "^edition$",
+          names(cached_data),
+          ignore.case = TRUE
+        ))
 
         if (has_edition) {
           # Dataset with editions - download only latest edition
-          if (verbose) message("Dataset con edizioni - download ultima edizione")
+          if (verbose) {
+            message("Dataset con edizioni - download ultima edizione")
+          }
 
           latest_edition <- get_latest_edition(dataset_id, verbose = verbose)
 
           if (!is.null(latest_edition)) {
             # Build filter for latest edition
-            dims <- tryCatch({
-              istatlab::get_dataset_dimensions(dataset_id)
-            }, error = function(e) NULL)
+            dims <- tryCatch(
+              {
+                istatlab::get_dataset_dimensions(dataset_id)
+              },
+              error = function(e) NULL
+            )
 
             if (!is.null(dims)) {
               edition_pos <- which(tolower(dims) == "edition")
@@ -559,28 +734,40 @@ download_dataset_by_freq_safe <- function(dataset_id,
                 filter_parts[edition_pos] <- latest_edition
                 edition_filter <- paste(filter_parts, collapse = ".")
 
-                data_list <- tryCatch({
-                  istatlab::download_istat_data_by_freq(
-                    dataset_id = dataset_id,
-                    filter = edition_filter,
-                    start_time = start_time,
-                    verbose = verbose
-                  )
-                }, error = function(e) {
-                  warning("Errore download edizione: ", e$message)
-                  NULL
-                })
+                data_list <- tryCatch(
+                  {
+                    istatlab::download_istat_data_by_freq(
+                      dataset_id = dataset_id,
+                      filter = edition_filter,
+                      start_time = start_time,
+                      verbose = verbose
+                    )
+                  },
+                  error = function(e) {
+                    warning("Errore download edizione: ", e$message)
+                    NULL
+                  }
+                )
 
                 if (!is.null(data_list) && length(data_list) > 0) {
                   combined <- data.table::rbindlist(
                     lapply(names(data_list), function(f) {
                       dt <- data_list[[f]]
-                      if (!is.null(dt) && nrow(dt) > 0) dt[, FREQ := f]
+                      if (!is.null(dt) && nrow(dt) > 0) {
+                        dt[, FREQ := f]
+                      }
                       dt
-                    }), fill = TRUE
+                    }),
+                    fill = TRUE
                   )
                   if (nrow(combined) > 0) {
-                    if (verbose) message("Download edizione completato: ", nrow(combined), " righe")
+                    if (verbose) {
+                      message(
+                        "Download edizione completato: ",
+                        nrow(combined),
+                        " righe"
+                      )
+                    }
                     return(combined)
                   }
                 }
@@ -588,35 +775,46 @@ download_dataset_by_freq_safe <- function(dataset_id,
             }
           }
           # Edition filter failed, continue to full download below
-          if (verbose) message("Filtro edizione fallito, provo download completo")
-
+          if (verbose) {
+            message("Filtro edizione fallito, provo download completo")
+          }
         } else {
           # No edition - use incremental update
           incremental_date <- format(as.Date(cache_mtime), "%Y-%m-%d")
-          if (verbose) message("Aggiornamento incrementale da: ", incremental_date)
+          if (verbose) {
+            message("Aggiornamento incrementale da: ", incremental_date)
+          }
 
-          data_list <- tryCatch({
-            istatlab::download_istat_data_by_freq(
-              dataset_id = dataset_id,
-              incremental = incremental_date,
-              verbose = verbose
-            )
-          }, error = function(e) {
-            warning("Errore download incrementale: ", e$message)
-            NULL
-          })
+          data_list <- tryCatch(
+            {
+              istatlab::download_istat_data_by_freq(
+                dataset_id = dataset_id,
+                incremental = incremental_date,
+                verbose = verbose
+              )
+            },
+            error = function(e) {
+              warning("Errore download incrementale: ", e$message)
+              NULL
+            }
+          )
 
           if (!is.null(data_list) && length(data_list) > 0) {
             combined <- data.table::rbindlist(
               lapply(names(data_list), function(f) {
                 dt <- data_list[[f]]
-                if (!is.null(dt) && nrow(dt) > 0) dt[, FREQ := f]
+                if (!is.null(dt) && nrow(dt) > 0) {
+                  dt[, FREQ := f]
+                }
                 dt
-              }), fill = TRUE
+              }),
+              fill = TRUE
             )
             if (nrow(combined) > 0) {
               result <- merge_incremental_data(cached_data, combined)
-              if (verbose) message("Merge completato: ", nrow(result), " righe totali")
+              if (verbose) {
+                message("Merge completato: ", nrow(result), " righe totali")
+              }
               return(result)
             }
           }
@@ -627,19 +825,24 @@ download_dataset_by_freq_safe <- function(dataset_id,
     }
   }
 
-  if (verbose) message("Download dataset: ", dataset_id, " (split per frequenza)")
+  if (verbose) {
+    message("Download dataset: ", dataset_id, " (split per frequenza)")
+  }
 
   # Attempt download split by frequency
-  data_list <- tryCatch({
-    istatlab::download_istat_data_by_freq(
-      dataset_id = dataset_id,
-      start_time = start_time,
-      verbose = verbose
-    )
-  }, error = function(e) {
-    warning("Errore download ", dataset_id, ": ", e$message)
-    NULL
-  })
+  data_list <- tryCatch(
+    {
+      istatlab::download_istat_data_by_freq(
+        dataset_id = dataset_id,
+        start_time = start_time,
+        verbose = verbose
+      )
+    },
+    error = function(e) {
+      warning("Errore download ", dataset_id, ": ", e$message)
+      NULL
+    }
+  )
 
   # Process results
   if (!is.null(data_list) && length(data_list) > 0) {
@@ -648,9 +851,18 @@ download_dataset_by_freq_safe <- function(dataset_id,
       result <- data_list[["ALL"]]
       if (!is.null(result) && nrow(result) > 0) {
         if (verbose) {
-          freqs <- if ("FREQ" %in% names(result)) unique(result$FREQ) else "unknown"
-          message("Download completato (from ALL): ", nrow(result), " righe, ",
-                  "frequenze: ", paste(freqs, collapse = ", "))
+          freqs <- if ("FREQ" %in% names(result)) {
+            unique(result$FREQ)
+          } else {
+            "unknown"
+          }
+          message(
+            "Download completato (from ALL): ",
+            nrow(result),
+            " righe, ",
+            "frequenze: ",
+            paste(freqs, collapse = ", ")
+          )
         }
         return(result)
       }
@@ -672,8 +884,13 @@ download_dataset_by_freq_safe <- function(dataset_id,
     if (length(combined_list) > 0) {
       result <- data.table::rbindlist(combined_list, fill = TRUE)
       if (verbose) {
-        message("Download completato: ", nrow(result), " righe, ",
-                length(combined_list), " frequenze")
+        message(
+          "Download completato: ",
+          nrow(result),
+          " righe, ",
+          length(combined_list),
+          " frequenze"
+        )
       }
       return(result)
     }
@@ -682,8 +899,13 @@ download_dataset_by_freq_safe <- function(dataset_id,
   # Download failed - try cache fallback
   cached_data <- read_cached()
   if (!is.null(cached_data)) {
-    warning("Download fallito. Uso dati in cache per: ", dataset_id,
-            " (", nrow(cached_data), " righe)")
+    warning(
+      "Download fallito. Uso dati in cache per: ",
+      dataset_id,
+      " (",
+      nrow(cached_data),
+      " righe)"
+    )
     return(cached_data)
   }
 
@@ -707,18 +929,24 @@ download_dataset_by_freq_safe <- function(dataset_id,
 #' @param verbose Logical; print status messages (default TRUE)
 #'
 #' @return data.table with single frequency data including FREQ column
-download_dataset_single_freq_safe <- function(dataset_id,
-                                               freq,
-                                               start_time,
-                                               check_update = TRUE,
-                                               targets_dir = "_targets/objects",
-                                               apply_delay = TRUE,
-                                               delay_min = 6,
-                                               delay_max = 300,
-                                               verbose = TRUE) {
+download_dataset_single_freq_safe <- function(
+  dataset_id,
+  freq,
+  start_time,
+  check_update = TRUE,
+  targets_dir = "_targets/objects",
+  apply_delay = TRUE,
+  delay_min = 6,
+  delay_max = 300,
+  verbose = TRUE
+) {
   # Apply random delay for rate limiting
   if (apply_delay) {
-    random_rate_limit_delay(min_seconds = delay_min, max_seconds = delay_max, verbose = verbose)
+    random_rate_limit_delay(
+      min_seconds = delay_min,
+      max_seconds = delay_max,
+      verbose = verbose
+    )
   }
 
   # Construct frequency-specific target filename
@@ -740,33 +968,47 @@ download_dataset_single_freq_safe <- function(dataset_id,
   if (check_update) {
     cached_data <- read_cached()
     if (!is.null(cached_data)) {
-      last_update <- tryCatch({
-        istatlab::get_dataset_last_update(dataset_id)
-      }, error = function(e) NULL)
+      last_update <- tryCatch(
+        {
+          istatlab::get_dataset_last_update(dataset_id)
+        },
+        error = function(e) NULL
+      )
 
       if (!is.null(last_update) && file.exists(cached_file)) {
         cache_mtime <- file.info(cached_file)$mtime
 
         if (last_update <= cache_mtime) {
-          if (verbose) message("Dataset ", dataset_id, "_", freq, " non aggiornato. Skip.")
+          if (verbose) {
+            message("Dataset ", dataset_id, "_", freq, " non aggiornato. Skip.")
+          }
           return(cached_data)
         }
 
         # Update detected - try incremental update
-        has_edition <- any(grepl("^edition$", names(cached_data), ignore.case = TRUE))
+        has_edition <- any(grepl(
+          "^edition$",
+          names(cached_data),
+          ignore.case = TRUE
+        ))
 
         if (!has_edition) {
           incremental_date <- format(as.Date(cache_mtime), "%Y-%m-%d")
-          if (verbose) message("Aggiornamento incrementale da: ", incremental_date)
+          if (verbose) {
+            message("Aggiornamento incrementale da: ", incremental_date)
+          }
 
-          incr_list <- tryCatch({
-            istatlab::download_istat_data_by_freq(
-              dataset_id = dataset_id,
-              incremental = incremental_date,
-              verbose = verbose,
-              freq = freq
-            )
-          }, error = function(e) NULL)
+          incr_list <- tryCatch(
+            {
+              istatlab::download_istat_data_by_freq(
+                dataset_id = dataset_id,
+                incremental = incremental_date,
+                verbose = verbose,
+                freq = freq
+              )
+            },
+            error = function(e) NULL
+          )
 
           if (!is.null(incr_list)) {
             new_data <- NULL
@@ -775,7 +1017,11 @@ download_dataset_single_freq_safe <- function(dataset_id,
               new_data <- incr_list[[freq]]
             }
             # Case 2: fallback when frequency check failed - data returned as "ALL"
-            if (is.null(new_data) && "ALL" %in% names(incr_list) && !is.null(incr_list[["ALL"]])) {
+            if (
+              is.null(new_data) &&
+                "ALL" %in% names(incr_list) &&
+                !is.null(incr_list[["ALL"]])
+            ) {
               all_data <- incr_list[["ALL"]]
               if (nrow(all_data) > 0 && "FREQ" %in% names(all_data)) {
                 new_data <- all_data[FREQ == freq]
@@ -784,7 +1030,9 @@ download_dataset_single_freq_safe <- function(dataset_id,
             if (!is.null(new_data) && nrow(new_data) > 0) {
               new_data[, FREQ := freq]
               result <- merge_incremental_data(cached_data, new_data)
-              if (verbose) message("Merge completato: ", nrow(result), " righe")
+              if (verbose) {
+                message("Merge completato: ", nrow(result), " righe")
+              }
               return(result)
             }
           }
@@ -793,20 +1041,25 @@ download_dataset_single_freq_safe <- function(dataset_id,
     }
   }
 
-  if (verbose) message("Download dataset: ", dataset_id, " freq: ", freq)
+  if (verbose) {
+    message("Download dataset: ", dataset_id, " freq: ", freq)
+  }
 
   # Download using istatlab by_freq function (with specific frequency)
-  data_list <- tryCatch({
-    istatlab::download_istat_data_by_freq(
-      dataset_id = dataset_id,
-      start_time = start_time,
-      verbose = verbose,
-      freq = freq
-    )
-  }, error = function(e) {
-    warning("Errore download ", dataset_id, ": ", e$message)
-    NULL
-  })
+  data_list <- tryCatch(
+    {
+      istatlab::download_istat_data_by_freq(
+        dataset_id = dataset_id,
+        start_time = start_time,
+        verbose = verbose,
+        freq = freq
+      )
+    },
+    error = function(e) {
+      warning("Errore download ", dataset_id, ": ", e$message)
+      NULL
+    }
+  )
 
   # Extract the requested frequency
   if (!is.null(data_list)) {
@@ -815,7 +1068,9 @@ download_dataset_single_freq_safe <- function(dataset_id,
       result <- data_list[[freq]]
       if (!is.null(result) && nrow(result) > 0) {
         result[, FREQ := freq]
-        if (verbose) message("Download completato: ", nrow(result), " righe per ", freq)
+        if (verbose) {
+          message("Download completato: ", nrow(result), " righe per ", freq)
+        }
         return(filter_latest_edition(result, verbose = verbose))
       }
     }
@@ -826,7 +1081,14 @@ download_dataset_single_freq_safe <- function(dataset_id,
       if (nrow(all_data) > 0 && "FREQ" %in% names(all_data)) {
         result <- all_data[FREQ == freq]
         if (nrow(result) > 0) {
-          if (verbose) message("Download completato (from ALL): ", nrow(result), " righe per ", freq)
+          if (verbose) {
+            message(
+              "Download completato (from ALL): ",
+              nrow(result),
+              " righe per ",
+              freq
+            )
+          }
           return(filter_latest_edition(result, verbose = verbose))
         }
       }
@@ -836,8 +1098,15 @@ download_dataset_single_freq_safe <- function(dataset_id,
   # Download failed - try cache fallback
   cached_data <- read_cached()
   if (!is.null(cached_data)) {
-    warning("Download fallito. Uso cache per: ", dataset_id, "_", freq,
-            " (", nrow(cached_data), " righe)")
+    warning(
+      "Download fallito. Uso cache per: ",
+      dataset_id,
+      "_",
+      freq,
+      " (",
+      nrow(cached_data),
+      " righe)"
+    )
     return(cached_data)
   }
 
@@ -868,18 +1137,21 @@ apply_codelist_labels <- function(data, codelists = NULL) {
   istatlab::ensure_codelists(dataset_id, verbose = FALSE)
 
   # Try labeling with package function (uses dimension-specific codelist mapping)
-  result <- tryCatch({
-    istatlab::apply_labels(data, verbose = FALSE)
-  }, error = function(e) {
-    message("Labeling failed: ", e$message)
-    message("Refreshing codelists for ", dataset_id, " and retrying...")
+  result <- tryCatch(
+    {
+      istatlab::apply_labels(data, verbose = FALSE)
+    },
+    error = function(e) {
+      message("Labeling failed: ", e$message)
+      message("Refreshing codelists for ", dataset_id, " and retrying...")
 
-    # Force refresh codelists for this dataset
-    istatlab::download_codelists(dataset_id, force_update = TRUE)
+      # Force refresh codelists for this dataset
+      istatlab::download_codelists(dataset_id, force_update = TRUE)
 
-    # Retry with fresh cache
-    istatlab::apply_labels(data, verbose = FALSE)
-  })
+      # Retry with fresh cache
+      istatlab::apply_labels(data, verbose = FALSE)
+    }
+  )
 
   return(result)
 }
@@ -893,7 +1165,9 @@ apply_codelist_labels <- function(data, codelists = NULL) {
 #' @return data.table with summary statistics
 summarize_datasets <- function(data_list) {
   summaries <- lapply(data_list, function(dt) {
-    if (is.null(dt)) return(NULL)
+    if (is.null(dt)) {
+      return(NULL)
+    }
 
     data.table::data.table(
       dataset_id = dt$id[1],
@@ -919,12 +1193,19 @@ summarize_datasets <- function(data_list) {
 get_dimension_columns <- function(dt) {
   all_cols <- names(dt)
 
- # Exclude common non-dimension columns
+  # Exclude common non-dimension columns
   exclude_patterns <- c(
-    "^tempo", "^valore$", "^ObsValue$", "^ObsDimension$",
-    "^CONF_STATUS$", "^OBS_STATUS$", "^FREQ$",
-    "_label$", "^id$", "^type$",
-    "^NOTE_"  # Exclude note columns
+    "^tempo",
+    "^valore$",
+    "^ObsValue$",
+    "^ObsDimension$",
+    "^CONF_STATUS$",
+    "^OBS_STATUS$",
+    "^FREQ$",
+    "_label$",
+    "^id$",
+    "^type$",
+    "^NOTE_" # Exclude note columns
   )
 
   exclude_cols <- unlist(lapply(exclude_patterns, function(p) {
@@ -943,7 +1224,11 @@ get_dimension_columns <- function(dt) {
 #' @param time_col Name of time column (default "tempo")
 #'
 #' @return data.table with per-series statistics
-compute_series_statistics <- function(dt, value_col = "valore", time_col = "tempo") {
+compute_series_statistics <- function(
+  dt,
+  value_col = "valore",
+  time_col = "tempo"
+) {
   if (!value_col %in% names(dt) || !time_col %in% names(dt)) {
     return(data.table::data.table())
   }
@@ -966,16 +1251,19 @@ compute_series_statistics <- function(dt, value_col = "valore", time_col = "temp
   }
 
   # Compute stats per unique series
-  stats_dt <- dt[, .(
-    n_obs = .N,
-    start_date = min(get(time_col), na.rm = TRUE),
-    end_date = max(get(time_col), na.rm = TRUE),
-    mean = mean(get(value_col), na.rm = TRUE),
-    sd = stats::sd(get(value_col), na.rm = TRUE),
-    min = min(get(value_col), na.rm = TRUE),
-    max = max(get(value_col), na.rm = TRUE),
-    n_missing = sum(is.na(get(value_col)))
-  ), by = dim_cols]
+  stats_dt <- dt[,
+    .(
+      n_obs = .N,
+      start_date = min(get(time_col), na.rm = TRUE),
+      end_date = max(get(time_col), na.rm = TRUE),
+      mean = mean(get(value_col), na.rm = TRUE),
+      sd = stats::sd(get(value_col), na.rm = TRUE),
+      min = min(get(value_col), na.rm = TRUE),
+      max = max(get(value_col), na.rm = TRUE),
+      n_missing = sum(is.na(get(value_col)))
+    ),
+    by = dim_cols
+  ]
 
   # Add series_id column
   stats_dt[, series_id := do.call(paste, c(.SD, sep = "_")), .SDcols = dim_cols]
@@ -993,9 +1281,11 @@ compute_series_statistics <- function(dt, value_col = "valore", time_col = "temp
 #' @param time_col Name of time column (default "tempo")
 #'
 #' @return List with: data (plot-ready), stats (per-series), dimensions, n_series
-prepare_plot_data <- function(labeled_data,
-                               value_col = "valore",
-                               time_col = "tempo") {
+prepare_plot_data <- function(
+  labeled_data,
+  value_col = "valore",
+  time_col = "tempo"
+) {
   if (is.null(labeled_data) || nrow(labeled_data) == 0) {
     warning("No data to prepare for plotting")
     return(list(
@@ -1051,16 +1341,18 @@ prepare_plot_data <- function(labeled_data,
 #' @param verbose Logical; print status messages (default TRUE)
 #'
 #' @return List with: forecasts (named list), n_series, n_success, dimension_cols
-generate_dataset_forecasts <- function(labeled_data,
-                                        horizon = NULL,
-                                        models = c("auto.arima", "ets", "naive"),
-                                        value_col = "valore",
-                                        time_col = "tempo",
-                                        freq_col = "FREQ",
-                                        min_obs = 12L,
-                                        n_cores = NULL,
-                                        large_threshold = 500L,
-                                        verbose = TRUE) {
+generate_dataset_forecasts <- function(
+  labeled_data,
+  horizon = NULL,
+  models = c("auto.arima", "ets", "naive"),
+  value_col = "valore",
+  time_col = "tempo",
+  freq_col = "FREQ",
+  min_obs = 12L,
+  n_cores = NULL,
+  large_threshold = 500L,
+  verbose = TRUE
+) {
   if (is.null(labeled_data) || nrow(labeled_data) == 0) {
     warning("No data for forecasting")
     return(list(
@@ -1082,7 +1374,10 @@ generate_dataset_forecasts <- function(labeled_data,
     series_dims_list <- list(single_series = NULL)
   } else {
     # Split data by dimension combinations
-    labeled_data[, .series_key := do.call(paste, c(.SD, sep = "_")), .SDcols = dim_cols_no_label]
+    labeled_data[,
+      .series_key := do.call(paste, c(.SD, sep = "_")),
+      .SDcols = dim_cols_no_label
+    ]
 
     if (verbose) {
       n_unique <- length(unique(labeled_data$.series_key))
@@ -1106,35 +1401,48 @@ generate_dataset_forecasts <- function(labeled_data,
   series_names <- names(series_list)
 
   # Always use all models (auto.arima, ets, naive)
-  if (verbose) message("Using models: ", paste(models, collapse = ", "))
+  if (verbose) {
+    message("Using models: ", paste(models, collapse = ", "))
+  }
 
   # Always use parallel processing
   use_parallel <- TRUE
-  if (is.null(n_cores)) n_cores <- max(1L, parallel::detectCores() - 1L)
-  if (verbose) message("Using parallel processing with ", n_cores, " cores")
+  if (is.null(n_cores)) {
+    n_cores <- max(1L, parallel::detectCores() - 1L)
+  }
+  if (verbose) {
+    message("Using parallel processing with ", n_cores, " cores")
+  }
 
   # Function to forecast a single series (takes data directly)
   forecast_one_series <- function(series_data, series_dims) {
-    if (nrow(series_data) < min_obs) return(NULL)
+    if (nrow(series_data) < min_obs) {
+      return(NULL)
+    }
 
-    tryCatch({
-      fc <- istatlab::forecast_series(
-        series_data,
-        time_col = time_col,
-        value_col = value_col,
-        freq_col = freq_col,
-        horizon = horizon,
-        models = models,
-        verbose = FALSE
-      )
-      fc$series_dims <- series_dims
-      fc
-    }, error = function(e) NULL)
+    tryCatch(
+      {
+        fc <- istatlab::forecast_series(
+          series_data,
+          time_col = time_col,
+          value_col = value_col,
+          freq_col = freq_col,
+          horizon = horizon,
+          models = models,
+          verbose = FALSE
+        )
+        fc$series_dims <- series_dims
+        fc
+      },
+      error = function(e) NULL
+    )
   }
 
   # Run forecasts
   if (use_parallel) {
-    if (verbose) message("Starting parallel forecasting...")
+    if (verbose) {
+      message("Starting parallel forecasting...")
+    }
     forecasts <- parallel::mcmapply(
       forecast_one_series,
       series_list,
@@ -1163,7 +1471,9 @@ generate_dataset_forecasts <- function(labeled_data,
   forecasts <- forecasts[!sapply(forecasts, is.null)]
 
   n_success <- length(forecasts)
-  if (verbose) message("Successfully forecasted ", n_success, "/", n_series, " series")
+  if (verbose) {
+    message("Successfully forecasted ", n_success, "/", n_series, " series")
+  }
 
   list(
     forecasts = forecasts,
@@ -1184,10 +1494,12 @@ generate_dataset_forecasts <- function(labeled_data,
 #' @param time_col Name of time column (default "tempo")
 #'
 #' @return data.table with combined historical + forecast data and type column
-combine_historical_forecast <- function(labeled_data,
-                                         forecast_results,
-                                         value_col = "valore",
-                                         time_col = "tempo") {
+combine_historical_forecast <- function(
+  labeled_data,
+  forecast_results,
+  value_col = "valore",
+  time_col = "tempo"
+) {
   if (is.null(labeled_data) || nrow(labeled_data) == 0) {
     warning("No historical data to combine")
     return(labeled_data)
@@ -1198,8 +1510,10 @@ combine_historical_forecast <- function(labeled_data,
   historical[, type := "historical"]
 
   # Check if we have forecasts
-  if (is.null(forecast_results) ||
-      length(forecast_results$forecasts) == 0) {
+  if (
+    is.null(forecast_results) ||
+      length(forecast_results$forecasts) == 0
+  ) {
     warning("No forecasts to combine")
     return(historical)
   }
@@ -1210,7 +1524,9 @@ combine_historical_forecast <- function(labeled_data,
   forecast_list <- lapply(names(forecast_results$forecasts), function(fc_name) {
     fc <- forecast_results$forecasts[[fc_name]]
 
-    if (is.null(fc) || is.null(fc$best_model)) return(NULL)
+    if (is.null(fc) || is.null(fc$best_model)) {
+      return(NULL)
+    }
 
     # Get best model forecast data.table
     fc_dt <- data.table::copy(fc$best_model$forecast)
@@ -1292,4 +1608,93 @@ combine_historical_forecast <- function(labeled_data,
   }
 
   combined
+}
+
+# 8. Data optimization functions for deployment -----
+
+#' Slim Dataset by Removing NULL and Constant Columns
+#'
+#' Removes columns that are entirely NA or have only one unique value,
+#' reducing dataset size for faster loading.
+#'
+#' @param dt A data.table to slim down
+#' @param keep_always Character vector of column names to never remove
+#'
+#' @return A slimmed copy of the data.table
+slim_dataset <- function(
+  dt,
+  keep_always = c("FREQ", "dataset_id", "dataset_name")
+) {
+  dt <- data.table::copy(dt)
+
+  # Remove all-NA columns
+  na_cols <- names(dt)[vapply(dt, function(x) all(is.na(x)), logical(1))]
+  if (length(na_cols) > 0) {
+    dt[, (na_cols) := NULL]
+  }
+
+  # Remove constant columns (only one unique value)
+  const_cols <- names(dt)[vapply(
+    dt,
+    function(x) {
+      data.table::uniqueN(x, na.rm = TRUE) <= 1
+    },
+    logical(1)
+  )]
+  const_cols <- setdiff(const_cols, keep_always)
+  if (length(const_cols) > 0) {
+    dt[, (const_cols) := NULL]
+  }
+
+  dt
+}
+
+#' Partition Datasets to Individual qs Files
+#'
+#' Takes a named list of data.tables and saves each as a separate .qs file
+#' with NULL/constant columns removed. Creates an index file with metadata.
+#'
+#' @param dataset_list Named list of data.tables
+#' @param output_dir Directory to save partitioned files
+#' @param preset qs compression preset: "fast", "balanced", "high" (default "fast")
+#'
+#' @return Path to output directory (for targets file format)
+partition_datasets <- function(dataset_list, output_dir, preset = "fast") {
+  if (!requireNamespace("qs", quietly = TRUE)) {
+    stop(
+      "Package 'qs' is required for partition_datasets(). Install with: install.packages('qs')"
+    )
+  }
+
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+  index_data <- list()
+
+  for (name in names(dataset_list)) {
+    dt <- slim_dataset(dataset_list[[name]])
+    file_path <- file.path(output_dir, paste0(name, ".qs"))
+    qs::qsave(dt, file_path, preset = preset)
+
+    index_data[[name]] <- list(
+      dataset = name,
+      rows = nrow(dt),
+      columns = names(dt),
+      size_kb = round(file.size(file_path) / 1024, 1)
+    )
+  }
+
+  # Save index with metadata
+  qs::qsave(index_data, file.path(output_dir, "index.qs"))
+
+  message(
+    "Partitioned ",
+    length(dataset_list),
+    " datasets to ",
+    output_dir,
+    " (",
+    sum(vapply(index_data, function(x) x$size_kb, numeric(1))),
+    " KB total)"
+  )
+
+  output_dir
 }

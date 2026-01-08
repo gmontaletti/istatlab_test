@@ -1,0 +1,551 @@
+---
+title: "ISTAT Dati Trimestrali"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme:
+      version: 4
+      bootswatch: flatly
+runtime: shiny
+---
+
+```{css, echo=FALSE}
+/* Fix dropdown menu overflow - target dropdowns appended to body */
+body > .bootstrap-select.dropdown > .dropdown-menu {
+  max-width: 320px;
+  overflow-x: hidden;
+}
+
+body > .bootstrap-select.dropdown > .dropdown-menu li a {
+  white-space: normal;
+  word-wrap: break-word;
+}
+
+/* Also handle inline dropdowns */
+.bootstrap-select .dropdown-menu {
+  max-width: 320px;
+  overflow-x: hidden;
+}
+
+.bootstrap-select .dropdown-menu li a {
+  white-space: normal;
+  word-wrap: break-word;
+}
+
+.bootstrap-select .dropdown-toggle .filter-option-inner-inner {
+  white-space: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Constrain only bootstrap-select widgets, not standard selectInput */
+.section.sidebar .bootstrap-select {
+  max-width: 100%;
+}
+```
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(shinyWidgets)
+library(data.table)
+library(ggplot2)
+library(targets)
+
+# Null-coalescing operator
+`%||%` <- function(a, b) if (is.null(a) || length(a) == 0 || is.na(a)) b else a
+
+# Helper function to create consistent pickerInput
+make_picker <- function(inputId, label, choices, selected = choices[1]) {
+  pickerInput(
+    inputId = inputId,
+    label = label,
+    choices = choices,
+    selected = selected,
+    multiple = TRUE,
+    width = "100%",
+    options = pickerOptions(
+      actionsBox = TRUE,
+      liveSearch = length(choices) > 10,
+      selectedTextFormat = "count > 2",
+      countSelectedText = "{0} selezionati",
+      noneSelectedText = "Seleziona...",
+      selectAllText = "Tutti",
+      deselectAllText = "Nessuno",
+      container = "body",
+      size = 10
+    )
+  )
+}
+
+# 1. Load combined datasets (already merged from filtered + forecast) -----
+tar_load(combined_150_908_Q, store = "_targets")
+tar_load(combined_150_915_Q, store = "_targets")
+tar_load(combined_150_916_Q, store = "_targets")
+tar_load(combined_150_938_Q, store = "_targets")
+tar_load(combined_151_914_Q, store = "_targets")
+tar_load(combined_151_929_Q, store = "_targets")
+tar_load(combined_152_913_Q, store = "_targets")
+tar_load(combined_152_928_Q, store = "_targets")
+tar_load(combined_532_930_Q, store = "_targets")
+tar_load(combined_534_1037_Q, store = "_targets")
+tar_load(combined_534_1038_Q, store = "_targets")
+tar_load(combined_154_373_Q, store = "_targets")
+
+# 2. Add dataset identifier to each -----
+combined_150_908_Q[, dataset := "150_908 - Forze di lavoro"]
+combined_150_915_Q[, dataset := "150_915 - Tasso di occupazione"]
+combined_150_916_Q[, dataset := "150_916 - Tasso di attivita"]
+combined_150_938_Q[, dataset := "150_938 - Occupati (migliaia)"]
+combined_151_914_Q[, dataset := "151_914 - Tasso di disoccupazione"]
+combined_151_929_Q[, dataset := "151_929 - Disoccupati"]
+combined_152_913_Q[, dataset := "152_913 - Tasso di inattivita"]
+combined_152_928_Q[, dataset := "152_928 - Inattivi"]
+combined_532_930_Q[, dataset := "532_930 - Popolazione per condizione"]
+combined_534_1037_Q[, dataset := "534_1037 - Ore lavorate imprese"]
+combined_534_1038_Q[, dataset := "534_1038 - Posti vacanti"]
+combined_154_373_Q[, dataset := "154_373 - Imprese con dipendenti"]
+
+# 3. Combine all datasets -----
+all_data <- rbindlist(list(
+  combined_150_908_Q, combined_150_915_Q, combined_150_916_Q, combined_150_938_Q,
+  combined_151_914_Q, combined_151_929_Q, combined_152_913_Q, combined_152_928_Q,
+  combined_532_930_Q, combined_534_1037_Q, combined_534_1038_Q, combined_154_373_Q
+), use.names = TRUE, fill = TRUE)
+
+# 4. Ensure tempo is Date -----
+if (!inherits(all_data$tempo, "Date")) {
+  all_data[, tempo := as.Date(tempo)]
+}
+
+# 5. Get all possible label columns (for dynamic filtering) -----
+all_label_cols <- grep("_label$", names(all_data), value = TRUE)
+
+# 6. Clean up -----
+rm(combined_150_908_Q, combined_150_915_Q, combined_150_916_Q, combined_150_938_Q,
+   combined_151_914_Q, combined_151_929_Q, combined_152_913_Q, combined_152_928_Q,
+   combined_532_930_Q, combined_534_1037_Q, combined_534_1038_Q, combined_154_373_Q)
+```
+
+Column {.sidebar data-width=350}
+-----------------------------------------------------------------------
+
+**Seleziona i filtri da sinistra a destra**
+
+```{r}
+# Dataset selector
+selectInput("dataset", "Dataset:",
+            choices = sort(unique(all_data$dataset)),
+            selected = sort(unique(all_data$dataset))[1])
+
+# Forecast controls
+checkboxInput("show_forecast", "Mostra previsioni", value = TRUE)
+
+selectInput("ci_level", "Intervallo di confidenza:",
+            choices = c("Nessuno" = "none", "80%" = "80", "95%" = "95"),
+            selected = "95")
+
+hr()
+
+# Date range selector
+dateRangeInput("date_range",
+               "Intervallo date:",
+               start = min(all_data$tempo),
+               end = max(all_data$tempo),
+               min = min(all_data$tempo),
+               max = max(all_data$tempo),
+               format = "yyyy-mm",
+               separator = " - ",
+               language = "it")
+
+hr()
+
+# Dynamic filter outputs
+uiOutput("filter1_ui")
+uiOutput("filter2_ui")
+uiOutput("filter3_ui")
+uiOutput("filter4_ui")
+uiOutput("filter5_ui")
+uiOutput("filter6_ui")
+
+hr()
+
+# Download controls
+h5("Esporta")
+selectInput("download_format", "Formato:", choices = c("PNG" = "png", "PDF" = "pdf"))
+downloadButton("download_plot", "Scarica grafico", icon = icon("download"))
+```
+
+```{r context="server"}
+# 1. Helper function to get available label columns for current dataset -----
+get_dataset_label_cols <- reactive({
+  req(input$dataset)
+  dt <- all_data[dataset == input$dataset]
+
+  # Get label columns that have non-NA values in this dataset
+  label_cols <- grep("_label$", names(dt), value = TRUE)
+  available <- sapply(label_cols, function(col) {
+    any(!is.na(dt[[col]]))
+  })
+
+  names(available)[available]
+})
+
+# 2. Filtered data after dataset selection -----
+data_after_dataset <- reactive({
+  req(input$dataset)
+  all_data[dataset == input$dataset]
+})
+
+# 3. Dynamic filter generation -----
+# Maps label column names to Italian display names
+label_names <- c(
+  "REF_AREA_label" = "Territorio",
+  "SEX_label" = "Sesso",
+  "AGE_label" = "Classe di eta",
+  "EDU_LEV_HIGHEST_label" = "Livello di istruzione",
+  "CITIZENSHIP_label" = "Cittadinanza",
+  "DURATION_UNEMPLOYMENT_label" = "Durata disoccupazione",
+  "EURO_LABOUR_STATUS_label" = "Condizione professionale",
+  "DATA_TYPE_label" = "Tipo di dato",
+  "ADJUSTMENT_label" = "Correzione",
+  "EMPLOYESS_CLASS_label" = "Classe di dipendenti",
+  "ECON_ACTIVITY_NACE_2007_label" = "Attivita economica"
+)
+
+# Filter 1
+output$filter1_ui <- renderUI({
+  cols <- get_dataset_label_cols()
+  if (length(cols) >= 1) {
+    col <- cols[1]
+    choices <- sort(unique(na.omit(data_after_dataset()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("filter1", label_names[col] %||% col, choices)
+    }
+  }
+})
+
+data_after_filter1 <- reactive({
+  cols <- get_dataset_label_cols()
+  dt <- data_after_dataset()
+  if (length(cols) >= 1 && !is.null(input$filter1) && length(input$filter1) > 0) {
+    col <- cols[1]
+    dt <- dt[get(col) %in% input$filter1 | is.na(get(col))]
+  }
+  dt
+})
+
+# Filter 2
+output$filter2_ui <- renderUI({
+  cols <- get_dataset_label_cols()
+  if (length(cols) >= 2) {
+    req(input$filter1)
+    col <- cols[2]
+    choices <- sort(unique(na.omit(data_after_filter1()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("filter2", label_names[col] %||% col, choices)
+    }
+  }
+})
+
+data_after_filter2 <- reactive({
+  cols <- get_dataset_label_cols()
+  dt <- data_after_filter1()
+  if (length(cols) >= 2 && !is.null(input$filter2) && length(input$filter2) > 0) {
+    col <- cols[2]
+    dt <- dt[get(col) %in% input$filter2 | is.na(get(col))]
+  }
+  dt
+})
+
+# Filter 3
+output$filter3_ui <- renderUI({
+  cols <- get_dataset_label_cols()
+  if (length(cols) >= 3) {
+    req(input$filter2)
+    col <- cols[3]
+    choices <- sort(unique(na.omit(data_after_filter2()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("filter3", label_names[col] %||% col, choices)
+    }
+  }
+})
+
+data_after_filter3 <- reactive({
+  cols <- get_dataset_label_cols()
+  dt <- data_after_filter2()
+  if (length(cols) >= 3 && !is.null(input$filter3) && length(input$filter3) > 0) {
+    col <- cols[3]
+    dt <- dt[get(col) %in% input$filter3 | is.na(get(col))]
+  }
+  dt
+})
+
+# Filter 4
+output$filter4_ui <- renderUI({
+  cols <- get_dataset_label_cols()
+  if (length(cols) >= 4) {
+    req(input$filter3)
+    col <- cols[4]
+    choices <- sort(unique(na.omit(data_after_filter3()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("filter4", label_names[col] %||% col, choices)
+    }
+  }
+})
+
+data_after_filter4 <- reactive({
+  cols <- get_dataset_label_cols()
+  dt <- data_after_filter3()
+  if (length(cols) >= 4 && !is.null(input$filter4) && length(input$filter4) > 0) {
+    col <- cols[4]
+    dt <- dt[get(col) %in% input$filter4 | is.na(get(col))]
+  }
+  dt
+})
+
+# Filter 5
+output$filter5_ui <- renderUI({
+  cols <- get_dataset_label_cols()
+  if (length(cols) >= 5) {
+    req(input$filter4)
+    col <- cols[5]
+    choices <- sort(unique(na.omit(data_after_filter4()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("filter5", label_names[col] %||% col, choices)
+    }
+  }
+})
+
+data_after_filter5 <- reactive({
+  cols <- get_dataset_label_cols()
+  dt <- data_after_filter4()
+  if (length(cols) >= 5 && !is.null(input$filter5) && length(input$filter5) > 0) {
+    col <- cols[5]
+    dt <- dt[get(col) %in% input$filter5 | is.na(get(col))]
+  }
+  dt
+})
+
+# Filter 6
+output$filter6_ui <- renderUI({
+  cols <- get_dataset_label_cols()
+  if (length(cols) >= 6) {
+    req(input$filter5)
+    col <- cols[6]
+    choices <- sort(unique(na.omit(data_after_filter5()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("filter6", label_names[col] %||% col, choices)
+    }
+  }
+})
+
+# Final filtered data
+filtered_data <- reactive({
+  cols <- get_dataset_label_cols()
+  dt <- data_after_filter5()
+  if (length(cols) >= 6 && !is.null(input$filter6) && length(input$filter6) > 0) {
+    col <- cols[6]
+    dt <- dt[get(col) %in% input$filter6 | is.na(get(col))]
+  }
+  # Apply date range filter
+  if (!is.null(input$date_range)) {
+    dt <- dt[tempo >= input$date_range[1] & tempo <= input$date_range[2]]
+  }
+  dt
+})
+
+# Reactive plot object for rendering and download
+plot_object <- reactive({
+  req(nrow(filtered_data()) > 0)
+
+  plot_data <- filtered_data()[order(tempo)]
+  cols <- get_dataset_label_cols()
+
+  # Build series identifier from columns with multiple selections
+  series_cols <- c()
+  if (length(cols) >= 1 && !is.null(input$filter1) && length(input$filter1) > 1) {
+    series_cols <- c(series_cols, cols[1])
+  }
+  if (length(cols) >= 2 && !is.null(input$filter2) && length(input$filter2) > 1) {
+    series_cols <- c(series_cols, cols[2])
+  }
+  if (length(cols) >= 3 && !is.null(input$filter3) && length(input$filter3) > 1) {
+    series_cols <- c(series_cols, cols[3])
+  }
+  if (length(cols) >= 4 && !is.null(input$filter4) && length(input$filter4) > 1) {
+    series_cols <- c(series_cols, cols[4])
+  }
+  if (length(cols) >= 5 && !is.null(input$filter5) && length(input$filter5) > 1) {
+    series_cols <- c(series_cols, cols[5])
+  }
+  if (length(cols) >= 6 && !is.null(input$filter6) && length(input$filter6) > 1) {
+    series_cols <- c(series_cols, cols[6])
+  }
+
+  # Create series label column
+  if (length(series_cols) > 0) {
+    plot_data[, series := do.call(paste, c(.SD, sep = " - ")), .SDcols = series_cols]
+  } else {
+    plot_data[, series := "Serie"]
+  }
+
+  # Split historical and forecast data
+  hist_data <- plot_data[type == "historical"]
+  fc_data <- plot_data[type == "forecast"]
+
+  # Create title from dataset
+  plot_title <- gsub("^[0-9_]+ - ", "", input$dataset)
+
+  # Build subtitle from filters with single selection
+  subtitle_parts <- c()
+  if (length(cols) >= 1 && !is.null(input$filter1) && length(input$filter1) == 1) {
+    subtitle_parts <- c(subtitle_parts, input$filter1)
+  }
+  if (length(cols) >= 2 && !is.null(input$filter2) && length(input$filter2) == 1) {
+    subtitle_parts <- c(subtitle_parts, input$filter2)
+  }
+  if (length(cols) >= 3 && !is.null(input$filter3) && length(input$filter3) == 1) {
+    subtitle_parts <- c(subtitle_parts, input$filter3)
+  }
+  plot_subtitle <- paste(subtitle_parts[1:min(3, length(subtitle_parts))], collapse = " - ")
+
+  # Check if we have multiple series
+  n_series <- length(unique(plot_data$series))
+
+  if (n_series > 1) {
+    # Multiple series: use color aesthetic
+    p <- ggplot() +
+      geom_line(data = hist_data, aes(x = tempo, y = valore, color = series, group = series),
+                linewidth = 1) +
+      geom_point(data = hist_data, aes(x = tempo, y = valore, color = series),
+                 size = 2, alpha = 0.7)
+
+    # Add forecast if enabled
+    if (input$show_forecast && nrow(fc_data) > 0) {
+      if (input$ci_level == "95" && "lower_95" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data,
+                             aes(x = tempo, ymin = lower_95, ymax = upper_95, fill = series, group = series),
+                             alpha = 0.15)
+      } else if (input$ci_level == "80" && "lower_80" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data,
+                             aes(x = tempo, ymin = lower_80, ymax = upper_80, fill = series, group = series),
+                             alpha = 0.2)
+      }
+
+      p <- p +
+        geom_line(data = fc_data, aes(x = tempo, y = valore_forecast, color = series, group = series),
+                  linewidth = 1, linetype = "dashed") +
+        geom_point(data = fc_data, aes(x = tempo, y = valore_forecast, color = series),
+                   size = 2)
+    }
+
+    p <- p + labs(color = "Serie", fill = "Serie")
+
+  } else {
+    # Single series: use fixed colors
+    p <- ggplot() +
+      geom_line(data = hist_data, aes(x = tempo, y = valore),
+                color = "#2c3e50", linewidth = 1) +
+      geom_point(data = hist_data, aes(x = tempo, y = valore),
+                 color = "#2c3e50", size = 2, alpha = 0.7)
+
+    if (input$show_forecast && nrow(fc_data) > 0) {
+      if (input$ci_level == "95" && "lower_95" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data,
+                             aes(x = tempo, ymin = lower_95, ymax = upper_95),
+                             fill = "#3498db", alpha = 0.2)
+      } else if (input$ci_level == "80" && "lower_80" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data,
+                             aes(x = tempo, ymin = lower_80, ymax = upper_80),
+                             fill = "#3498db", alpha = 0.3)
+      }
+
+      p <- p +
+        geom_line(data = fc_data, aes(x = tempo, y = valore_forecast),
+                  color = "#3498db", linewidth = 1, linetype = "dashed") +
+        geom_point(data = fc_data, aes(x = tempo, y = valore_forecast),
+                   color = "#3498db", size = 2)
+    }
+  }
+
+  p +
+    scale_x_date(date_labels = "%Y-%m", date_breaks = "1 year") +
+    scale_y_continuous(labels = scales::comma_format(decimal.mark = ",", big.mark = ".")) +
+    labs(
+      title = plot_title,
+      subtitle = plot_subtitle,
+      x = NULL,
+      y = "Valore",
+      caption = paste("Dataset:", input$dataset)
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(color = "gray40", size = 11),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom",
+      legend.title = element_text(size = 10),
+      legend.text = element_text(size = 9)
+    ) +
+    guides(color = guide_legend(ncol = 2), fill = guide_legend(ncol = 2))
+})
+
+# Download handler
+output$download_plot <- downloadHandler(
+  filename = function() {
+    dataset_name <- gsub(" - .*$", "", input$dataset)
+    timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+    paste0("grafico_", dataset_name, "_", timestamp, ".", input$download_format)
+  },
+  content = function(file) {
+    p <- plot_object()
+    if (input$download_format == "png") {
+      ggsave(file, plot = p, width = 10, height = 6, dpi = 300, bg = "white")
+    } else {
+      ggsave(file, plot = p, width = 10, height = 6, device = cairo_pdf)
+    }
+  }
+)
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Serie temporale
+
+```{r}
+renderPlot({
+  plot_object()
+})
+```
+
+### Dati
+
+```{r}
+renderTable({
+  req(nrow(filtered_data()) > 0)
+
+  dt <- filtered_data()[order(-tempo)]
+
+  # Show only historical if forecast disabled
+  if (!input$show_forecast) {
+    dt <- dt[type == "historical"]
+  }
+
+  # Format quarter for display
+  result <- dt[, .(
+    Trimestre = paste0(format(tempo, "%Y"), "-", quarters(tempo)),
+    Valore = fifelse(
+      type == "historical",
+      format(round(valore, 2), decimal.mark = ",", big.mark = "."),
+      paste0(format(round(valore_forecast, 2), decimal.mark = ",", big.mark = "."), " *")
+    ),
+    Tipo = fifelse(type == "historical", "Storico", "Previsione")
+  )]
+
+  head(result, 24)
+}, striped = TRUE, hover = TRUE, spacing = "s")
+```

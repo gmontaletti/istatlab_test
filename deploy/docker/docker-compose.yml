@@ -1,0 +1,35 @@
+# ISTAT Dashboard Docker Compose Configuration
+# Usage: docker-compose up -d
+
+services:
+  istat-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: istat-dashboard:latest
+    container_name: istat-dashboard
+    ports:
+      - "3838:3838"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    environment:
+      - SHINY_LOG_LEVEL=INFO
+    # Optional: mount data directory for updates without rebuild
+    # volumes:
+    #   - ./app/data:/srv/shiny-server/istat-dashboard/data:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3838/istat-dashboard/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

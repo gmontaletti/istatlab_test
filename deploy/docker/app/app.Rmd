@@ -1,0 +1,1141 @@
+---
+title: "ISTAT Dashboard"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme:
+      version: 4
+      bootswatch: flatly
+    navbar:
+      - { title: "Info", href: "#", icon: "fa-info-circle", align: right }
+runtime: shiny
+---
+
+```{css, echo=FALSE}
+/* Fix dropdown menu overflow - target dropdowns appended to body */
+body > .bootstrap-select.dropdown > .dropdown-menu {
+  max-width: 320px;
+  overflow-x: hidden;
+}
+
+body > .bootstrap-select.dropdown > .dropdown-menu li a {
+  white-space: normal;
+  word-wrap: break-word;
+}
+
+/* Also handle inline dropdowns */
+.bootstrap-select .dropdown-menu {
+  max-width: 320px;
+  overflow-x: hidden;
+}
+
+.bootstrap-select .dropdown-menu li a {
+  white-space: normal;
+  word-wrap: break-word;
+}
+
+.bootstrap-select .dropdown-toggle .filter-option-inner-inner {
+  white-space: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Constrain only bootstrap-select widgets, not standard selectInput */
+.section.sidebar .bootstrap-select {
+  max-width: 100%;
+}
+```
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(shinyWidgets)
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(qs)
+
+# Null-coalescing operator
+`%||%` <- function(a, b) if (is.null(a) || length(a) == 0 || is.na(a)) b else a
+
+# Helper function to create consistent pickerInput
+make_picker <- function(inputId, label, choices, selected = choices[1]) {
+  pickerInput(
+    inputId = inputId,
+    label = label,
+    choices = choices,
+    selected = selected,
+    multiple = TRUE,
+    width = "100%",
+    options = pickerOptions(
+      actionsBox = TRUE,
+      liveSearch = length(choices) > 10,
+      selectedTextFormat = "count > 2",
+      countSelectedText = "{0} selezionati",
+      noneSelectedText = "Seleziona...",
+      selectAllText = "Tutti",
+      deselectAllText = "Nessuno",
+      container = "body",
+      size = 10
+    )
+  )
+}
+
+# 1. Quarterly data - lazy loading setup -----
+# Dataset metadata with display names
+q_dataset_info <- list(
+  "combined_150_908_Q" = "150_908 - Forze di lavoro",
+  "combined_150_915_Q" = "150_915 - Tasso di occupazione",
+  "combined_150_916_Q" = "150_916 - Tasso di attivita",
+  "combined_150_938_Q" = "150_938 - Occupati (migliaia)",
+  "combined_151_914_Q" = "151_914 - Tasso di disoccupazione",
+  "combined_151_929_Q" = "151_929 - Disoccupati",
+  "combined_152_913_Q" = "152_913 - Tasso di inattivita",
+  "combined_152_928_Q" = "152_928 - Inattivi",
+  "combined_532_930_Q" = "532_930 - Popolazione per condizione",
+  "combined_534_1037_Q" = "534_1037 - Ore lavorate imprese",
+  "combined_534_1038_Q" = "534_1038 - Posti vacanti",
+  "combined_154_373_Q" = "154_373 - Imprese con dipendenti"
+)
+
+# Check if optimized qs files exist, otherwise fall back to RDS
+q_use_qs <- dir.exists("data/quarterly")
+
+# Lazy loader function for quarterly data
+q_load_dataset <- function(target_name) {
+  if (q_use_qs) {
+    # Load from partitioned qs files (faster, no NULL columns)
+    qs::qread(file.path("data/quarterly", paste0(target_name, ".qs")))
+  } else {
+    # Fall back to RDS (backward compatibility)
+    quarterly_list <- readRDS("data/quarterly_data.rds")
+    quarterly_list[[target_name]]
+  }
+}
+
+# Cache for loaded datasets (in-session memory)
+q_cache <- new.env(parent = emptyenv())
+
+# Get dataset with caching
+q_get_dataset <- function(target_name) {
+  if (!exists(target_name, envir = q_cache)) {
+    dt <- q_load_dataset(target_name)
+    if (!is.null(dt)) {
+      dt[, dataset := q_dataset_info[[target_name]]]
+      if (!inherits(dt$tempo, "Date")) {
+        dt[, tempo := as.Date(tempo)]
+      }
+    }
+    assign(target_name, dt, envir = q_cache)
+  }
+  get(target_name, envir = q_cache)
+}
+
+# Get list of available datasets for selector
+q_dataset_choices <- setNames(names(q_dataset_info), unlist(q_dataset_info))
+
+# Pre-load first dataset for date range initialization
+q_first_dataset <- q_get_dataset(names(q_dataset_info)[1])
+q_date_range_min <- min(q_first_dataset$tempo, na.rm = TRUE)
+q_date_range_max <- max(q_first_dataset$tempo, na.rm = TRUE)
+
+# 2. Load vacancies data -----
+# Use qs if available, otherwise RDS
+if (dir.exists("data/vacancies")) {
+  v_data_50 <- qs::qread("data/vacancies/combined_534_50_M.qs")
+  v_data_49 <- qs::qread("data/vacancies/combined_534_49_M.qs")
+} else {
+  vacancies_list <- readRDS("data/vacancies_data.rds")
+  v_data_50 <- vacancies_list[["combined_534_50_M"]]
+  v_data_49 <- vacancies_list[["combined_534_49_M"]]
+  rm(vacancies_list)
+}
+
+# Filter for base 2021
+v_data_50 <- v_data_50[grepl("base 2021", DATA_TYPE_label, ignore.case = TRUE)]
+v_data_49 <- v_data_49[grepl("base 2021", DATA_TYPE_label, ignore.case = TRUE)]
+
+# Keep required columns
+v_cols_base <- c("tempo", "valore", "type", "valore_forecast",
+                 "lower_80", "upper_80", "lower_95", "upper_95")
+v_cols_dim <- c("DATA_TYPE_label", "ADJUSTMENT_label",
+                "PROF_STATUS_EMP_label", "ECON_ACTIVITY_NACE_2007_label")
+v_cols_to_keep <- c(v_cols_base, v_cols_dim)
+
+v_cols_50 <- intersect(v_cols_to_keep, names(v_data_50))
+v_cols_49 <- intersect(v_cols_to_keep, names(v_data_49))
+
+v_data_50 <- v_data_50[, ..v_cols_50]
+v_data_49 <- v_data_49[, ..v_cols_49]
+
+v_data_50[, dataset := "534_50 - Occupazione"]
+v_data_49[, dataset := "534_49 - Ore lavorate"]
+
+v_all_data <- rbindlist(list(v_data_50, v_data_49), use.names = TRUE)
+
+if (!inherits(v_all_data$tempo, "Date")) {
+  v_all_data[, tempo := as.Date(tempo)]
+}
+
+rm(v_data_50, v_data_49)
+
+# 3. Load wages data -----
+# Use qs if available, otherwise RDS
+if (dir.exists("data/wages")) {
+  w_data_149 <- qs::qread("data/wages/combined_149_319_M.qs")
+  w_data_155 <- qs::qread("data/wages/combined_155_318_M.qs")
+} else {
+  wages_list <- readRDS("data/wages_data.rds")
+  w_data_149 <- wages_list[["combined_149_319_M"]]
+  w_data_155 <- wages_list[["combined_155_318_M"]]
+  rm(wages_list)
+}
+
+# Filter for base 2021
+w_data_149 <- w_data_149[grepl("base.*2021", DATA_TYPE_label, ignore.case = TRUE)]
+w_data_155 <- w_data_155[grepl("base.*2021", DATA_TYPE_label, ignore.case = TRUE)]
+
+# Keep required columns
+w_cols_base <- c("tempo", "valore", "type", "valore_forecast",
+                 "lower_80", "upper_80", "lower_95", "upper_95")
+w_cols_149 <- c(w_cols_base, "DATA_TYPE_label", "MAIN_AGREEMENT_GROUP_label")
+w_cols_155 <- c(w_cols_base, "DATA_TYPE_label", "PROF_STATUS_EMP_label", "MAIN_AGREEMENT_GROUP_label")
+
+w_cols_149 <- intersect(w_cols_149, names(w_data_149))
+w_cols_155 <- intersect(w_cols_155, names(w_data_155))
+
+w_data_149 <- w_data_149[, ..w_cols_149]
+w_data_155 <- w_data_155[, ..w_cols_155]
+
+w_data_149[, dataset := "149_319 - Tensione contrattuale"]
+w_data_155[, dataset := "155_318 - Retribuzioni contrattuali"]
+
+w_data_149[, PROF_STATUS_EMP_label := NA_character_]
+
+w_all_data <- rbindlist(list(w_data_149, w_data_155), use.names = TRUE)
+
+if (!inherits(w_all_data$tempo, "Date")) {
+  w_all_data[, tempo := as.Date(tempo)]
+}
+
+rm(w_data_149, w_data_155)
+```
+
+Dati Trimestrali {data-navmenu="Dashboard" data-icon="fa-chart-line"}
+=====================================
+
+Column {.sidebar data-width=350}
+-----------------------------------------------------------------------
+
+**Seleziona i filtri da sinistra a destra**
+
+```{r}
+# Dataset selector - uses lazy loading metadata
+selectInput("q_dataset", "Dataset:",
+            choices = q_dataset_choices,
+            selected = names(q_dataset_choices)[1])
+
+# Forecast controls
+checkboxInput("q_show_forecast", "Mostra previsioni", value = TRUE)
+
+selectInput("q_ci_level", "Intervallo di confidenza:",
+            choices = c("Nessuno" = "none", "80%" = "80", "95%" = "95"),
+            selected = "95")
+
+hr()
+
+# Date range selector - initialized from first dataset
+dateRangeInput("q_date_range",
+               "Intervallo date:",
+               start = q_date_range_min,
+               end = q_date_range_max,
+               min = q_date_range_min,
+               max = q_date_range_max,
+               format = "yyyy-mm",
+               separator = " - ",
+               language = "it")
+
+hr()
+
+# Dynamic filter outputs
+uiOutput("q_filter1_ui")
+uiOutput("q_filter2_ui")
+uiOutput("q_filter3_ui")
+uiOutput("q_filter4_ui")
+uiOutput("q_filter5_ui")
+uiOutput("q_filter6_ui")
+
+hr()
+
+# Download controls
+h5("Esporta")
+selectInput("q_download_format", "Formato:", choices = c("PNG" = "png", "PDF" = "pdf"))
+downloadButton("q_download_plot", "Scarica grafico", icon = icon("download"))
+downloadButton("q_download_csv", "Scarica CSV", icon = icon("file-csv"))
+```
+
+```{r context="server"}
+# Maps label column names to Italian display names
+q_label_names <- c(
+  "REF_AREA_label" = "Territorio",
+  "SEX_label" = "Sesso",
+  "AGE_label" = "Classe di eta",
+  "EDU_LEV_HIGHEST_label" = "Livello di istruzione",
+  "CITIZENSHIP_label" = "Cittadinanza",
+  "DURATION_UNEMPLOYMENT_label" = "Durata disoccupazione",
+  "EURO_LABOUR_STATUS_label" = "Condizione professionale",
+  "DATA_TYPE_label" = "Tipo di dato",
+  "ADJUSTMENT_label" = "Correzione",
+  "EMPLOYESS_CLASS_label" = "Classe di dipendenti",
+  "ECON_ACTIVITY_NACE_2007_label" = "Attivita economica"
+)
+
+# Helper function to get available label columns for current dataset
+q_get_dataset_label_cols <- reactive({
+  req(input$q_dataset)
+  # Lazy load the selected dataset
+  dt <- q_get_dataset(input$q_dataset)
+  req(dt)
+  label_cols <- grep("_label$", names(dt), value = TRUE)
+  available <- sapply(label_cols, function(col) any(!is.na(dt[[col]])))
+  names(available)[available]
+})
+
+# Filtered data after dataset selection - uses lazy loading
+q_data_after_dataset <- reactive({
+  req(input$q_dataset)
+  # Lazy load the selected dataset (cached after first load)
+  q_get_dataset(input$q_dataset)
+})
+
+# Filter 1
+output$q_filter1_ui <- renderUI({
+  cols <- q_get_dataset_label_cols()
+  if (length(cols) >= 1) {
+    col <- cols[1]
+    choices <- sort(unique(na.omit(q_data_after_dataset()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("q_filter1", q_label_names[col] %||% col, choices)
+    }
+  }
+})
+
+q_data_after_filter1 <- reactive({
+  cols <- q_get_dataset_label_cols()
+  dt <- q_data_after_dataset()
+  if (length(cols) >= 1 && !is.null(input$q_filter1) && length(input$q_filter1) > 0) {
+    col <- cols[1]
+    dt <- dt[get(col) %in% input$q_filter1 | is.na(get(col))]
+  }
+  dt
+})
+
+# Filter 2
+output$q_filter2_ui <- renderUI({
+  cols <- q_get_dataset_label_cols()
+  if (length(cols) >= 2) {
+    req(input$q_filter1)
+    col <- cols[2]
+    choices <- sort(unique(na.omit(q_data_after_filter1()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("q_filter2", q_label_names[col] %||% col, choices)
+    }
+  }
+})
+
+q_data_after_filter2 <- reactive({
+  cols <- q_get_dataset_label_cols()
+  dt <- q_data_after_filter1()
+  if (length(cols) >= 2 && !is.null(input$q_filter2) && length(input$q_filter2) > 0) {
+    col <- cols[2]
+    dt <- dt[get(col) %in% input$q_filter2 | is.na(get(col))]
+  }
+  dt
+})
+
+# Filter 3
+output$q_filter3_ui <- renderUI({
+  cols <- q_get_dataset_label_cols()
+  if (length(cols) >= 3) {
+    req(input$q_filter2)
+    col <- cols[3]
+    choices <- sort(unique(na.omit(q_data_after_filter2()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("q_filter3", q_label_names[col] %||% col, choices)
+    }
+  }
+})
+
+q_data_after_filter3 <- reactive({
+  cols <- q_get_dataset_label_cols()
+  dt <- q_data_after_filter2()
+  if (length(cols) >= 3 && !is.null(input$q_filter3) && length(input$q_filter3) > 0) {
+    col <- cols[3]
+    dt <- dt[get(col) %in% input$q_filter3 | is.na(get(col))]
+  }
+  dt
+})
+
+# Filter 4
+output$q_filter4_ui <- renderUI({
+  cols <- q_get_dataset_label_cols()
+  if (length(cols) >= 4) {
+    req(input$q_filter3)
+    col <- cols[4]
+    choices <- sort(unique(na.omit(q_data_after_filter3()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("q_filter4", q_label_names[col] %||% col, choices)
+    }
+  }
+})
+
+q_data_after_filter4 <- reactive({
+  cols <- q_get_dataset_label_cols()
+  dt <- q_data_after_filter3()
+  if (length(cols) >= 4 && !is.null(input$q_filter4) && length(input$q_filter4) > 0) {
+    col <- cols[4]
+    dt <- dt[get(col) %in% input$q_filter4 | is.na(get(col))]
+  }
+  dt
+})
+
+# Filter 5
+output$q_filter5_ui <- renderUI({
+  cols <- q_get_dataset_label_cols()
+  if (length(cols) >= 5) {
+    req(input$q_filter4)
+    col <- cols[5]
+    choices <- sort(unique(na.omit(q_data_after_filter4()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("q_filter5", q_label_names[col] %||% col, choices)
+    }
+  }
+})
+
+q_data_after_filter5 <- reactive({
+  cols <- q_get_dataset_label_cols()
+  dt <- q_data_after_filter4()
+  if (length(cols) >= 5 && !is.null(input$q_filter5) && length(input$q_filter5) > 0) {
+    col <- cols[5]
+    dt <- dt[get(col) %in% input$q_filter5 | is.na(get(col))]
+  }
+  dt
+})
+
+# Filter 6
+output$q_filter6_ui <- renderUI({
+  cols <- q_get_dataset_label_cols()
+  if (length(cols) >= 6) {
+    req(input$q_filter5)
+    col <- cols[6]
+    choices <- sort(unique(na.omit(q_data_after_filter5()[[col]])))
+    if (length(choices) > 0) {
+      make_picker("q_filter6", q_label_names[col] %||% col, choices)
+    }
+  }
+})
+
+# Final filtered data
+q_filtered_data <- reactive({
+  cols <- q_get_dataset_label_cols()
+  dt <- q_data_after_filter5()
+  if (length(cols) >= 6 && !is.null(input$q_filter6) && length(input$q_filter6) > 0) {
+    col <- cols[6]
+    dt <- dt[get(col) %in% input$q_filter6 | is.na(get(col))]
+  }
+  if (!is.null(input$q_date_range)) {
+    dt <- dt[tempo >= input$q_date_range[1] & tempo <= input$q_date_range[2]]
+  }
+  dt
+})
+
+# Reactive plot object
+q_plot_object <- reactive({
+  req(nrow(q_filtered_data()) > 0)
+
+  plot_data <- q_filtered_data()[order(tempo)]
+  cols <- q_get_dataset_label_cols()
+
+  # Build series identifier from columns with multiple selections
+  series_cols <- c()
+  if (length(cols) >= 1 && !is.null(input$q_filter1) && length(input$q_filter1) > 1) {
+    series_cols <- c(series_cols, cols[1])
+  }
+  if (length(cols) >= 2 && !is.null(input$q_filter2) && length(input$q_filter2) > 1) {
+    series_cols <- c(series_cols, cols[2])
+  }
+  if (length(cols) >= 3 && !is.null(input$q_filter3) && length(input$q_filter3) > 1) {
+    series_cols <- c(series_cols, cols[3])
+  }
+  if (length(cols) >= 4 && !is.null(input$q_filter4) && length(input$q_filter4) > 1) {
+    series_cols <- c(series_cols, cols[4])
+  }
+  if (length(cols) >= 5 && !is.null(input$q_filter5) && length(input$q_filter5) > 1) {
+    series_cols <- c(series_cols, cols[5])
+  }
+  if (length(cols) >= 6 && !is.null(input$q_filter6) && length(input$q_filter6) > 1) {
+    series_cols <- c(series_cols, cols[6])
+  }
+
+  if (length(series_cols) > 0) {
+    plot_data[, series := do.call(paste, c(.SD, sep = " - ")), .SDcols = series_cols]
+  } else {
+    plot_data[, series := "Serie"]
+  }
+
+  hist_data <- plot_data[type == "historical"]
+  fc_data <- plot_data[type == "forecast"]
+
+  plot_title <- gsub("^[0-9_]+ - ", "", input$q_dataset)
+
+  subtitle_parts <- c()
+  if (length(cols) >= 1 && !is.null(input$q_filter1) && length(input$q_filter1) == 1) {
+    subtitle_parts <- c(subtitle_parts, input$q_filter1)
+  }
+  if (length(cols) >= 2 && !is.null(input$q_filter2) && length(input$q_filter2) == 1) {
+    subtitle_parts <- c(subtitle_parts, input$q_filter2)
+  }
+  if (length(cols) >= 3 && !is.null(input$q_filter3) && length(input$q_filter3) == 1) {
+    subtitle_parts <- c(subtitle_parts, input$q_filter3)
+  }
+  plot_subtitle <- paste(subtitle_parts[1:min(3, length(subtitle_parts))], collapse = " - ")
+
+  n_series <- length(unique(plot_data$series))
+
+  if (n_series > 1) {
+    p <- ggplot() +
+      geom_line(data = hist_data, aes(x = tempo, y = valore, color = series, group = series), linewidth = 1) +
+      geom_point(data = hist_data, aes(x = tempo, y = valore, color = series), size = 2, alpha = 0.7)
+
+    if (input$q_show_forecast && nrow(fc_data) > 0) {
+      if (input$q_ci_level == "95" && "lower_95" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_95, ymax = upper_95, fill = series, group = series), alpha = 0.15)
+      } else if (input$q_ci_level == "80" && "lower_80" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_80, ymax = upper_80, fill = series, group = series), alpha = 0.2)
+      }
+      p <- p +
+        geom_line(data = fc_data, aes(x = tempo, y = valore_forecast, color = series, group = series), linewidth = 1, linetype = "dashed") +
+        geom_point(data = fc_data, aes(x = tempo, y = valore_forecast, color = series), size = 2)
+    }
+    p <- p + labs(color = "Serie", fill = "Serie")
+  } else {
+    p <- ggplot() +
+      geom_line(data = hist_data, aes(x = tempo, y = valore), color = "#2c3e50", linewidth = 1) +
+      geom_point(data = hist_data, aes(x = tempo, y = valore), color = "#2c3e50", size = 2, alpha = 0.7)
+
+    if (input$q_show_forecast && nrow(fc_data) > 0) {
+      if (input$q_ci_level == "95" && "lower_95" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_95, ymax = upper_95), fill = "#3498db", alpha = 0.2)
+      } else if (input$q_ci_level == "80" && "lower_80" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_80, ymax = upper_80), fill = "#3498db", alpha = 0.3)
+      }
+      p <- p +
+        geom_line(data = fc_data, aes(x = tempo, y = valore_forecast), color = "#3498db", linewidth = 1, linetype = "dashed") +
+        geom_point(data = fc_data, aes(x = tempo, y = valore_forecast), color = "#3498db", size = 2)
+    }
+  }
+
+  p +
+    scale_x_date(date_labels = "%Y-%m", date_breaks = "1 year") +
+    scale_y_continuous(labels = scales::comma_format(decimal.mark = ",", big.mark = ".")) +
+    labs(title = plot_title, subtitle = plot_subtitle, x = NULL, y = "Valore", caption = paste("Dataset:", input$q_dataset)) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(color = "gray40", size = 11),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom",
+      legend.title = element_text(size = 10),
+      legend.text = element_text(size = 9)
+    ) +
+    guides(color = guide_legend(ncol = 2), fill = guide_legend(ncol = 2))
+})
+
+# Download handler
+output$q_download_plot <- downloadHandler(
+  filename = function() {
+    dataset_name <- gsub(" - .*$", "", input$q_dataset)
+    timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+    paste0("grafico_", dataset_name, "_", timestamp, ".", input$q_download_format)
+  },
+  content = function(file) {
+    p <- q_plot_object()
+    if (input$q_download_format == "png") {
+      ggsave(file, plot = p, width = 10, height = 6, dpi = 300, bg = "white")
+    } else {
+      ggsave(file, plot = p, width = 10, height = 6, device = "pdf")
+    }
+  }
+)
+
+# CSV download handler
+output$q_download_csv <- downloadHandler(
+  filename = function() {
+    dataset_name <- gsub(" - .*$", "", input$q_dataset)
+    timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+    paste0("dati_", dataset_name, "_", timestamp, ".csv")
+  },
+  content = function(file) {
+    dt <- q_filtered_data()
+    if (!input$q_show_forecast) {
+      dt <- dt[type == "historical"]
+    }
+    fwrite(dt, file, sep = ";", dec = ",")
+  }
+)
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Serie temporale
+
+```{r}
+renderPlotly({
+  p <- q_plot_object()
+  ggplotly(p, tooltip = c("x", "y", "colour")) %>%
+    layout(hovermode = "x unified")
+})
+```
+
+
+Occupazione (Base 2021) {data-navmenu="Dashboard" data-icon="fa-briefcase"}
+=====================================
+
+Column {.sidebar data-width=350}
+-----------------------------------------------------------------------
+
+**Seleziona i filtri da sinistra a destra**
+
+```{r}
+# Dataset selector
+selectInput("v_dataset", "Dataset:",
+            choices = unique(v_all_data$dataset),
+            selected = unique(v_all_data$dataset)[1])
+
+# Forecast controls
+checkboxInput("v_show_forecast", "Mostra previsioni", value = TRUE)
+
+selectInput("v_ci_level", "Intervallo di confidenza:",
+            choices = c("Nessuno" = "none", "80%" = "80", "95%" = "95"),
+            selected = "95")
+
+hr()
+
+# Date range selector
+dateRangeInput("v_date_range",
+               "Intervallo date:",
+               start = min(v_all_data$tempo),
+               end = max(v_all_data$tempo),
+               min = min(v_all_data$tempo),
+               max = max(v_all_data$tempo),
+               format = "yyyy-mm",
+               separator = " - ",
+               language = "it")
+
+hr()
+
+# Dynamic filter outputs
+uiOutput("v_data_type_ui")
+uiOutput("v_adjustment_ui")
+uiOutput("v_prof_status_ui")
+uiOutput("v_econ_activity_ui")
+
+hr()
+
+# Download controls
+h5("Esporta")
+selectInput("v_download_format", "Formato:", choices = c("PNG" = "png", "PDF" = "pdf"))
+downloadButton("v_download_plot", "Scarica grafico", icon = icon("download"))
+downloadButton("v_download_csv", "Scarica CSV", icon = icon("file-csv"))
+```
+
+```{r context="server"}
+# Filtered data after dataset selection
+v_data_after_dataset <- reactive({
+  req(input$v_dataset)
+  v_all_data[dataset == input$v_dataset]
+})
+
+# DATA_TYPE dropdown
+output$v_data_type_ui <- renderUI({
+  choices <- sort(unique(v_data_after_dataset()$DATA_TYPE_label))
+  make_picker("v_data_type", "Tipo di dato:", choices)
+})
+
+# Filtered data after DATA_TYPE selection
+v_data_after_data_type <- reactive({
+  dt <- v_data_after_dataset()
+  if (!is.null(input$v_data_type) && length(input$v_data_type) > 0) {
+    dt <- dt[DATA_TYPE_label %in% input$v_data_type]
+  }
+  dt
+})
+
+# ADJUSTMENT dropdown
+output$v_adjustment_ui <- renderUI({
+  req(input$v_data_type)
+  choices <- sort(unique(v_data_after_data_type()$ADJUSTMENT_label))
+  make_picker("v_adjustment", "Correzione:", choices)
+})
+
+# Filtered data after ADJUSTMENT selection
+v_data_after_adjustment <- reactive({
+  dt <- v_data_after_data_type()
+  if (!is.null(input$v_adjustment) && length(input$v_adjustment) > 0) {
+    dt <- dt[ADJUSTMENT_label %in% input$v_adjustment]
+  }
+  dt
+})
+
+# PROF_STATUS dropdown
+output$v_prof_status_ui <- renderUI({
+  req(input$v_adjustment)
+  choices <- sort(unique(v_data_after_adjustment()$PROF_STATUS_EMP_label))
+  make_picker("v_prof_status", "Posizione professionale:", choices)
+})
+
+# Filtered data after PROF_STATUS selection
+v_data_after_prof_status <- reactive({
+  dt <- v_data_after_adjustment()
+  if (!is.null(input$v_prof_status) && length(input$v_prof_status) > 0) {
+    dt <- dt[PROF_STATUS_EMP_label %in% input$v_prof_status]
+  }
+  dt
+})
+
+# ECON_ACTIVITY dropdown
+output$v_econ_activity_ui <- renderUI({
+  req(input$v_prof_status)
+  choices <- sort(unique(v_data_after_prof_status()$ECON_ACTIVITY_NACE_2007_label))
+  make_picker("v_econ_activity", "Attivita economica:", choices)
+})
+
+# Final filtered data
+v_filtered_data <- reactive({
+  dt <- v_data_after_prof_status()
+  if (!is.null(input$v_econ_activity) && length(input$v_econ_activity) > 0) {
+    dt <- dt[ECON_ACTIVITY_NACE_2007_label %in% input$v_econ_activity]
+  }
+  if (!is.null(input$v_date_range)) {
+    dt <- dt[tempo >= input$v_date_range[1] & tempo <= input$v_date_range[2]]
+  }
+  dt
+})
+
+# Reactive plot object
+v_plot_object <- reactive({
+  req(nrow(v_filtered_data()) > 0)
+
+  plot_data <- v_filtered_data()[order(tempo)]
+
+  series_cols <- c()
+  if (!is.null(input$v_data_type) && length(input$v_data_type) > 1) {
+    series_cols <- c(series_cols, "DATA_TYPE_label")
+  }
+  if (!is.null(input$v_adjustment) && length(input$v_adjustment) > 1) {
+    series_cols <- c(series_cols, "ADJUSTMENT_label")
+  }
+  if (!is.null(input$v_prof_status) && length(input$v_prof_status) > 1) {
+    series_cols <- c(series_cols, "PROF_STATUS_EMP_label")
+  }
+  if (!is.null(input$v_econ_activity) && length(input$v_econ_activity) > 1) {
+    series_cols <- c(series_cols, "ECON_ACTIVITY_NACE_2007_label")
+  }
+
+  if (length(series_cols) > 0) {
+    plot_data[, series := do.call(paste, c(.SD, sep = " - ")), .SDcols = series_cols]
+  } else {
+    plot_data[, series := "Serie"]
+  }
+
+  hist_data <- plot_data[type == "historical"]
+  fc_data <- plot_data[type == "forecast"]
+
+  if (length(input$v_data_type) == 1) {
+    plot_title <- input$v_data_type
+  } else {
+    plot_title <- paste0(length(input$v_data_type), " tipi di dato")
+  }
+
+  if (length(input$v_econ_activity) == 1) {
+    plot_title <- paste0(plot_title, "\n", input$v_econ_activity)
+  }
+
+  subtitle_parts <- c()
+  if (length(input$v_adjustment) == 1) {
+    subtitle_parts <- c(subtitle_parts, input$v_adjustment)
+  }
+  if (length(input$v_prof_status) == 1) {
+    subtitle_parts <- c(subtitle_parts, input$v_prof_status)
+  }
+  plot_subtitle <- paste(subtitle_parts, collapse = " - ")
+
+  n_series <- length(unique(plot_data$series))
+
+  if (n_series > 1) {
+    p <- ggplot() +
+      geom_line(data = hist_data, aes(x = tempo, y = valore, color = series, group = series), linewidth = 1) +
+      geom_point(data = hist_data, aes(x = tempo, y = valore, color = series), size = 1.5, alpha = 0.7)
+
+    if (input$v_show_forecast && nrow(fc_data) > 0) {
+      if (input$v_ci_level == "95" && "lower_95" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_95, ymax = upper_95, fill = series, group = series), alpha = 0.15)
+      } else if (input$v_ci_level == "80" && "lower_80" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_80, ymax = upper_80, fill = series, group = series), alpha = 0.2)
+      }
+      p <- p +
+        geom_line(data = fc_data, aes(x = tempo, y = valore_forecast, color = series, group = series), linewidth = 1, linetype = "dashed") +
+        geom_point(data = fc_data, aes(x = tempo, y = valore_forecast, color = series), size = 1.5)
+    }
+    p <- p + labs(color = "Serie", fill = "Serie")
+  } else {
+    p <- ggplot() +
+      geom_line(data = hist_data, aes(x = tempo, y = valore), color = "#2c3e50", linewidth = 1) +
+      geom_point(data = hist_data, aes(x = tempo, y = valore), color = "#2c3e50", size = 1.5, alpha = 0.7)
+
+    if (input$v_show_forecast && nrow(fc_data) > 0) {
+      if (input$v_ci_level == "95" && "lower_95" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_95, ymax = upper_95), fill = "#3498db", alpha = 0.2)
+      } else if (input$v_ci_level == "80" && "lower_80" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_80, ymax = upper_80), fill = "#3498db", alpha = 0.3)
+      }
+      p <- p +
+        geom_line(data = fc_data, aes(x = tempo, y = valore_forecast), color = "#3498db", linewidth = 1, linetype = "dashed") +
+        geom_point(data = fc_data, aes(x = tempo, y = valore_forecast), color = "#3498db", size = 1.5)
+    }
+  }
+
+  p +
+    scale_x_date(date_labels = "%Y-%m", date_breaks = "6 months") +
+    scale_y_continuous(labels = scales::comma_format(decimal.mark = ",", big.mark = ".")) +
+    labs(title = plot_title, subtitle = plot_subtitle, x = NULL, y = "Valore", caption = paste("Dataset:", input$v_dataset)) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold", size = 12),
+      plot.subtitle = element_text(color = "gray40", size = 10),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom",
+      legend.title = element_text(size = 10),
+      legend.text = element_text(size = 9)
+    ) +
+    guides(color = guide_legend(ncol = 2), fill = guide_legend(ncol = 2))
+})
+
+# Download handler
+output$v_download_plot <- downloadHandler(
+  filename = function() {
+    dataset_name <- gsub(" - .*$", "", input$v_dataset)
+    timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+    paste0("grafico_", dataset_name, "_", timestamp, ".", input$v_download_format)
+  },
+  content = function(file) {
+    p <- v_plot_object()
+    if (input$v_download_format == "png") {
+      ggsave(file, plot = p, width = 10, height = 6, dpi = 300, bg = "white")
+    } else {
+      ggsave(file, plot = p, width = 10, height = 6, device = "pdf")
+    }
+  }
+)
+
+# CSV download handler
+output$v_download_csv <- downloadHandler(
+  filename = function() {
+    dataset_name <- gsub(" - .*$", "", input$v_dataset)
+    timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+    paste0("dati_", dataset_name, "_", timestamp, ".csv")
+  },
+  content = function(file) {
+    dt <- v_filtered_data()
+    if (!input$v_show_forecast) {
+      dt <- dt[type == "historical"]
+    }
+    fwrite(dt, file, sep = ";", dec = ",")
+  }
+)
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Serie temporale
+
+```{r}
+renderPlotly({
+  p <- v_plot_object()
+  ggplotly(p, tooltip = c("x", "y", "colour")) %>%
+    layout(hovermode = "x unified")
+})
+```
+
+
+Retribuzioni (Base 2021) {data-navmenu="Dashboard" data-icon="fa-euro-sign"}
+=====================================
+
+Column {.sidebar data-width=350}
+-----------------------------------------------------------------------
+
+**Seleziona i filtri da sinistra a destra**
+
+```{r}
+# Dataset selector
+selectInput("w_dataset", "Dataset:",
+            choices = unique(w_all_data$dataset),
+            selected = unique(w_all_data$dataset)[1])
+
+# Forecast controls
+checkboxInput("w_show_forecast", "Mostra previsioni", value = TRUE)
+
+selectInput("w_ci_level", "Intervallo di confidenza:",
+            choices = c("Nessuno" = "none", "80%" = "80", "95%" = "95"),
+            selected = "95")
+
+hr()
+
+# Date range selector
+dateRangeInput("w_date_range",
+               "Intervallo date:",
+               start = min(w_all_data$tempo),
+               end = max(w_all_data$tempo),
+               min = min(w_all_data$tempo),
+               max = max(w_all_data$tempo),
+               format = "yyyy-mm",
+               separator = " - ",
+               language = "it")
+
+hr()
+
+# Dynamic filter outputs
+uiOutput("w_data_type_ui")
+uiOutput("w_prof_status_ui")
+uiOutput("w_agreement_group_ui")
+
+hr()
+
+# Download controls
+h5("Esporta")
+selectInput("w_download_format", "Formato:", choices = c("PNG" = "png", "PDF" = "pdf"))
+downloadButton("w_download_plot", "Scarica grafico", icon = icon("download"))
+downloadButton("w_download_csv", "Scarica CSV", icon = icon("file-csv"))
+```
+
+```{r context="server"}
+# Filtered data after dataset selection
+w_data_after_dataset <- reactive({
+  req(input$w_dataset)
+  w_all_data[dataset == input$w_dataset]
+})
+
+# DATA_TYPE dropdown
+output$w_data_type_ui <- renderUI({
+  choices <- sort(unique(w_data_after_dataset()$DATA_TYPE_label))
+  make_picker("w_data_type", "Tipo di dato:", choices)
+})
+
+# Filtered data after DATA_TYPE selection
+w_data_after_data_type <- reactive({
+  dt <- w_data_after_dataset()
+  if (!is.null(input$w_data_type) && length(input$w_data_type) > 0) {
+    dt <- dt[DATA_TYPE_label %in% input$w_data_type]
+  }
+  dt
+})
+
+# PROF_STATUS dropdown (conditional)
+output$w_prof_status_ui <- renderUI({
+  req(input$w_data_type)
+  dt <- w_data_after_data_type()
+
+  prof_values <- unique(dt$PROF_STATUS_EMP_label)
+  prof_values <- prof_values[!is.na(prof_values)]
+
+  if (length(prof_values) > 0) {
+    choices <- sort(prof_values)
+    make_picker("w_prof_status", "Posizione professionale:", choices)
+  } else {
+    tags$div(
+      style = "display: none;",
+      selectInput("w_prof_status", "Posizione professionale:",
+                  choices = c("(non applicabile)" = "NA"),
+                  selected = "NA")
+    )
+  }
+})
+
+# Filtered data after PROF_STATUS selection
+w_data_after_prof_status <- reactive({
+  req(input$w_data_type)
+  dt <- w_data_after_data_type()
+
+  has_prof <- any(!is.na(dt$PROF_STATUS_EMP_label))
+
+  if (has_prof && !is.null(input$w_prof_status) && length(input$w_prof_status) > 0 && !("NA" %in% input$w_prof_status)) {
+    dt[PROF_STATUS_EMP_label %in% input$w_prof_status]
+  } else {
+    dt
+  }
+})
+
+# MAIN_AGREEMENT_GROUP dropdown
+output$w_agreement_group_ui <- renderUI({
+  req(input$w_data_type)
+  req(input$w_prof_status)
+  choices <- sort(unique(w_data_after_prof_status()$MAIN_AGREEMENT_GROUP_label))
+  make_picker("w_agreement_group", "Gruppo contrattuale:", choices)
+})
+
+# Final filtered data
+w_filtered_data <- reactive({
+  dt <- w_data_after_prof_status()
+  if (!is.null(input$w_agreement_group) && length(input$w_agreement_group) > 0) {
+    dt <- dt[MAIN_AGREEMENT_GROUP_label %in% input$w_agreement_group]
+  }
+  if (!is.null(input$w_date_range)) {
+    dt <- dt[tempo >= input$w_date_range[1] & tempo <= input$w_date_range[2]]
+  }
+  dt
+})
+
+# Reactive plot object
+w_plot_object <- reactive({
+  req(nrow(w_filtered_data()) > 0)
+
+  plot_data <- w_filtered_data()[order(tempo)]
+
+  series_cols <- c()
+  if (!is.null(input$w_data_type) && length(input$w_data_type) > 1) {
+    series_cols <- c(series_cols, "DATA_TYPE_label")
+  }
+  if (!is.null(input$w_prof_status) && length(input$w_prof_status) > 1 && !("NA" %in% input$w_prof_status)) {
+    series_cols <- c(series_cols, "PROF_STATUS_EMP_label")
+  }
+  if (!is.null(input$w_agreement_group) && length(input$w_agreement_group) > 1) {
+    series_cols <- c(series_cols, "MAIN_AGREEMENT_GROUP_label")
+  }
+
+  if (length(series_cols) > 0) {
+    plot_data[, series := do.call(paste, c(.SD, sep = " - ")), .SDcols = series_cols]
+  } else {
+    plot_data[, series := "Serie"]
+  }
+
+  hist_data <- plot_data[type == "historical"]
+  fc_data <- plot_data[type == "forecast"]
+
+  if (length(input$w_data_type) == 1) {
+    plot_title <- input$w_data_type
+  } else {
+    plot_title <- paste0(length(input$w_data_type), " tipi di dato")
+  }
+
+  subtitle_parts <- c()
+  if (length(input$w_agreement_group) == 1) {
+    subtitle_parts <- c(subtitle_parts, input$w_agreement_group)
+  }
+  if (!is.null(input$w_prof_status) && length(input$w_prof_status) == 1 && !("NA" %in% input$w_prof_status)) {
+    subtitle_parts <- c(subtitle_parts, input$w_prof_status)
+  }
+  plot_subtitle <- paste(subtitle_parts, collapse = " - ")
+
+  n_series <- length(unique(plot_data$series))
+
+  if (n_series > 1) {
+    p <- ggplot() +
+      geom_line(data = hist_data, aes(x = tempo, y = valore, color = series, group = series), linewidth = 1) +
+      geom_point(data = hist_data, aes(x = tempo, y = valore, color = series), size = 1.5, alpha = 0.7)
+
+    if (input$w_show_forecast && nrow(fc_data) > 0) {
+      if (input$w_ci_level == "95" && "lower_95" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_95, ymax = upper_95, fill = series, group = series), alpha = 0.15)
+      } else if (input$w_ci_level == "80" && "lower_80" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_80, ymax = upper_80, fill = series, group = series), alpha = 0.2)
+      }
+      p <- p +
+        geom_line(data = fc_data, aes(x = tempo, y = valore_forecast, color = series, group = series), linewidth = 1, linetype = "dashed") +
+        geom_point(data = fc_data, aes(x = tempo, y = valore_forecast, color = series), size = 1.5)
+    }
+    p <- p + labs(color = "Serie", fill = "Serie")
+  } else {
+    p <- ggplot() +
+      geom_line(data = hist_data, aes(x = tempo, y = valore), color = "#2c3e50", linewidth = 1) +
+      geom_point(data = hist_data, aes(x = tempo, y = valore), color = "#2c3e50", size = 1.5, alpha = 0.7)
+
+    if (input$w_show_forecast && nrow(fc_data) > 0) {
+      if (input$w_ci_level == "95" && "lower_95" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_95, ymax = upper_95), fill = "#3498db", alpha = 0.2)
+      } else if (input$w_ci_level == "80" && "lower_80" %in% names(fc_data)) {
+        p <- p + geom_ribbon(data = fc_data, aes(x = tempo, ymin = lower_80, ymax = upper_80), fill = "#3498db", alpha = 0.3)
+      }
+      p <- p +
+        geom_line(data = fc_data, aes(x = tempo, y = valore_forecast), color = "#3498db", linewidth = 1, linetype = "dashed") +
+        geom_point(data = fc_data, aes(x = tempo, y = valore_forecast), color = "#3498db", size = 1.5)
+    }
+  }
+
+  p +
+    scale_x_date(date_labels = "%Y-%m", date_breaks = "12 months") +
+    scale_y_continuous(labels = scales::comma_format(decimal.mark = ",", big.mark = ".")) +
+    labs(title = plot_title, subtitle = plot_subtitle, x = NULL, y = "Valore", caption = paste("Dataset:", input$w_dataset)) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold", size = 11),
+      plot.subtitle = element_text(color = "gray40", size = 10),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom",
+      legend.title = element_text(size = 10),
+      legend.text = element_text(size = 9)
+    ) +
+    guides(color = guide_legend(ncol = 2), fill = guide_legend(ncol = 2))
+})
+
+# Download handler
+output$w_download_plot <- downloadHandler(
+  filename = function() {
+    dataset_name <- gsub(" - .*$", "", input$w_dataset)
+    timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+    paste0("grafico_", dataset_name, "_", timestamp, ".", input$w_download_format)
+  },
+  content = function(file) {
+    p <- w_plot_object()
+    if (input$w_download_format == "png") {
+      ggsave(file, plot = p, width = 10, height = 6, dpi = 300, bg = "white")
+    } else {
+      ggsave(file, plot = p, width = 10, height = 6, device = "pdf")
+    }
+  }
+)
+
+# CSV download handler
+output$w_download_csv <- downloadHandler(
+  filename = function() {
+    dataset_name <- gsub(" - .*$", "", input$w_dataset)
+    timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+    paste0("dati_", dataset_name, "_", timestamp, ".csv")
+  },
+  content = function(file) {
+    dt <- w_filtered_data()
+    if (!input$w_show_forecast) {
+      dt <- dt[type == "historical"]
+    }
+    fwrite(dt, file, sep = ";", dec = ",")
+  }
+)
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Serie temporale
+
+```{r}
+renderPlotly({
+  p <- w_plot_object()
+  ggplotly(p, tooltip = c("x", "y", "colour")) %>%
+    layout(hovermode = "x unified")
+})
+```

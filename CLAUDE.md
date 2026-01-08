@@ -73,6 +73,44 @@ Managed via renv. Key packages:
 - `targets` + `tarchetypes` - pipeline orchestration
 - `data.table` - data manipulation
 
+## Deployment
+
+### shinyapps.io
+
+The dashboard can be deployed to shinyapps.io. See `deploy/DEPLOYMENT.md` for instructions.
+
+```bash
+# Extract data and deploy
+source("R/prepare_deployment_data.R")
+rsconnect::deployApp(appDir = "deploy", appName = "istat-dashboard")
+```
+
+### Docker
+
+A self-contained Docker package is available in `deploy/docker/`. To deploy on another machine:
+
+```bash
+# Copy package to target machine
+scp -r deploy/docker user@target:/path/
+
+# On target machine
+cd /path/docker
+docker-compose up -d
+
+# Access at http://<ip>:3838/istat-dashboard/
+```
+
+Package contents:
+- `Dockerfile` - container definition (rocker/shiny:4.4.0 base)
+- `docker-compose.yml` - orchestration with health checks
+- `app/app.Rmd` - main unified dashboard
+- `app/data/*.rds` - pre-computed data (~20 MB)
+
+To update data for Docker deployment:
+```bash
+Rscript R/update_docker_data.R
+```
+
 ## Project Maintainer
 
 Giampaolo Montaletti (giampaolo.montaletti@gmail.com)

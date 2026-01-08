@@ -1,0 +1,7 @@
+Title: ISTAT Dashboard
+Author: Giampaolo Montaletti
+AuthorEmail: giampaolo.montaletti@gmail.com
+License: MIT
+Type: Shiny
+Description: Interactive dashboard for exploring ISTAT statistical data including
+    labor force indicators, employment data, and wage statistics.
