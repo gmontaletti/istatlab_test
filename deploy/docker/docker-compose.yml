@@ -14,20 +14,20 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
         reservations:
-          memory: 512M
+          memory: 1G
     environment:
       - SHINY_LOG_LEVEL=INFO
     # Optional: mount data directory for updates without rebuild
     # volumes:
     #   - ./app/data:/srv/shiny-server/istat-dashboard/data:ro
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3838/istat-dashboard/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+      test: ["CMD", "curl", "-f", "-m", "5", "http://localhost:3838/istat-dashboard/"]
+      interval: 60s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
     logging:
       driver: "json-file"
       options:

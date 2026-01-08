@@ -47,6 +47,15 @@ body > .bootstrap-select.dropdown > .dropdown-menu li a {
 }
 ```
 
+```{js, echo=FALSE}
+// Keep-alive ping to prevent idle disconnection
+setInterval(function() {
+  if (window.Shiny && Shiny.setInputValue) {
+    Shiny.setInputValue('keepAlive', Math.random());
+  }
+}, 60000);
+```
+
 ```{r setup, include=FALSE}
 library(flexdashboard)
 library(shiny)
